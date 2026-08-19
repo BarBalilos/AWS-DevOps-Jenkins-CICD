@@ -127,8 +127,7 @@ pipeline {
                 container('kubectl') {
                     sh '''
                         set -eu
-                        echo "Cluster (via in-cluster ServiceAccount jenkins-cd-agent):"
-                        kubectl cluster-info | head -1
+                        echo "Running as ServiceAccount: system:serviceaccount:jenkins:jenkins-cd-agent (in-cluster auth)"
 
                         kubectl auth can-i patch deployments -n "${NAMESPACE}" \
                           || { echo "Missing deployments patch permission in ${NAMESPACE}"; exit 1; }
@@ -136,6 +135,36 @@ pipeline {
                           || { echo "Missing pods/exec create permission in ${NAMESPACE} (needed for smoke test)"; exit 1; }
 
                         echo "RBAC sanity checks passed."
+                    '''
+                }
+            }
+        }
+
+        stage('Refresh ECR Pull Secret') {
+            steps {
+                container('kubectl') {
+                    // ecr-pull-secret is bootstrapped once out-of-band (see README);
+                    // this only ever updates its value using a fresh short-lived
+                    // ECR token (12h TTL) — RBAC grants get/update/patch on this
+                    // exact secret name only, never create (see rbac/cd-deploy-rbac.yaml).
+                    sh '''
+                        set -eu
+                        aws --version > /dev/null 2>&1 || apk add --no-cache aws-cli
+
+                        ECR_PASSWORD=$(aws ecr get-login-password --region "${AWS_REGION}")
+                        kubectl create secret docker-registry ecr-pull-secret \
+                          --docker-server="${ECR_REGISTRY}" \
+                          --docker-username=AWS \
+                          --docker-password="${ECR_PASSWORD}" \
+                          -n "${NAMESPACE}" \
+                          --dry-run=client -o yaml | kubectl apply -f -
+
+                        kubectl patch serviceaccount backend-sa -n "${NAMESPACE}" \
+                          --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
+                        kubectl patch serviceaccount worker-sa -n "${NAMESPACE}" \
+                          --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
+
+                        echo "ECR pull secret refreshed and linked to backend-sa/worker-sa."
                     '''
                 }
             }
@@ -173,6 +202,12 @@ pipeline {
                           deployed-image-tag="${IMAGE_TAG}" \
                           deployed-by-build="${TRIGGERED_BY_BUILD}" \
                           --overwrite
+
+                        # Force fresh pods even if the digest is unchanged from a prior
+                        # (e.g. failed) run, so any newly-applied ServiceAccount/secret
+                        # changes are actually picked up rather than leaving stale pods.
+                        kubectl rollout restart deployment/backend -n "${NAMESPACE}"
+                        kubectl rollout restart deployment/worker -n "${NAMESPACE}"
                     '''
                 }
             }

@@ -12,37 +12,37 @@ metadata:
   name: jenkins-cd-deployer
   namespace: devops-app
 rules:
-  # Deployments: manage — apply manifests, update image tag, drive rollout.
   - apiGroups: ["apps"]
     resources: ["deployments"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  # ReplicaSets/Pods: read-only — needed for rollout status, verify, smoke test.
   - apiGroups: ["apps"]
     resources: ["replicasets"]
     verbs: ["get", "list", "watch"]
   - apiGroups: [""]
     resources: ["pods"]
     verbs: ["get", "list", "watch"]
-  # Pods/exec: needed ONLY for the smoke-test stage (kubectl exec + local
-  # curl-equivalent inside the already-deployed Pod). Nothing else uses this.
   - apiGroups: [""]
     resources: ["pods/exec"]
     verbs: ["create"]
-  # Services / ConfigMaps / ServiceAccounts: manage — part of the app manifests.
   - apiGroups: [""]
     resources: ["services", "configmaps", "serviceaccounts"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  # Events: read-only — failure diagnostics.
+  - apiGroups: [""]
+    # ecr-pull-secret only — get/update/patch (deliberately no "create": K8s
+    # RBAC cannot restrict "create" by resourceNames since there's no
+    # existing object yet to match, so granting create-on-secrets would be
+    # unrestrictable-by-name. The secret is bootstrapped once out-of-band by
+    # a human; CD only ever refreshes its value from then on. This SA can
+    # never read/touch app-secrets or any other secret in this namespace.
+    resources: ["secrets"]
+    verbs: ["get", "update", "patch"]
+    resourceNames: ["ecr-pull-secret"]
   - apiGroups: [""]
     resources: ["events"]
     verbs: ["get", "list", "watch"]
-  # Ingress / NetworkPolicy: manage — part of the app manifests.
   - apiGroups: ["networking.k8s.io"]
     resources: ["ingresses", "networkpolicies"]
     verbs: ["get", "list", "watch", "create", "update", "patch"]
-  # Deliberately excluded: secrets (provisioned separately, outside CD's
-  # blast radius), delete verb (rollback uses `kubectl rollout undo`, not
-  # delete), and namespaces (this Role is namespace-scoped, not cluster-scoped).
 ---
 apiVersion: rbac.authorization.k8s.io/v1
 kind: RoleBinding
@@ -56,4 +56,27 @@ subjects:
 roleRef:
   kind: Role
   name: jenkins-cd-deployer
+  apiGroup: rbac.authorization.k8s.io
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRole
+metadata:
+  name: jenkins-cd-namespace-reader
+rules:
+  - apiGroups: [""]
+    resources: ["namespaces"]
+    verbs: ["get"]
+    resourceNames: ["devops-app"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: ClusterRoleBinding
+metadata:
+  name: jenkins-cd-namespace-reader-binding
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-cd-agent
+    namespace: jenkins
+roleRef:
+  kind: ClusterRole
+  name: jenkins-cd-namespace-reader
   apiGroup: rbac.authorization.k8s.io

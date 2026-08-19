@@ -1,12 +1,6 @@
-# jenkins/helm/values-jcasc.yaml
-# Configuration as Code (JCasC), layered on top of values.yaml.
-# Built incrementally and verified after each addition since JCasC
-# errors only surface when the controller pod actually starts.
-
 controller:
   JCasC:
     defaultConfig: false
-
     configScripts:
       security-realm: |
         jenkins:
@@ -20,7 +14,6 @@ controller:
             globalMatrix:
               permissions:
                 - "Overall/Administer:${chart-admin-username}"
-
       kubernetes-cloud: |
         jenkins:
           clouds:
@@ -49,17 +42,9 @@ controller:
                         resourceLimitCpu: "500m"
                         resourceLimitMemory: "512Mi"
                         envVars:
-                          - secretEnvVar:
-                              key: "AWS_ACCESS_KEY_ID"
-                              secretName: "jenkins-ecr-credentials"
-                              secretKey: "aws-access-key-id"
-                          - secretEnvVar:
-                              key: "AWS_SECRET_ACCESS_KEY"
-                              secretName: "jenkins-ecr-credentials"
-                              secretKey: "aws-secret-access-key"
-                          - envVar:
-                              key: "AWS_DEFAULT_REGION"
-                              value: "us-east-1"
+                          - secretEnvVar: {key: "AWS_ACCESS_KEY_ID", secretName: "jenkins-ecr-credentials", secretKey: "aws-access-key-id"}
+                          - secretEnvVar: {key: "AWS_SECRET_ACCESS_KEY", secretName: "jenkins-ecr-credentials", secretKey: "aws-secret-access-key"}
+                          - envVar: {key: "AWS_DEFAULT_REGION", value: "us-east-1"}
                       - name: "kaniko"
                         image: "gcr.io/kaniko-project/executor:v1.23.2-debug"
                         command: "sleep"
@@ -70,17 +55,9 @@ controller:
                         resourceLimitCpu: "1"
                         resourceLimitMemory: "1Gi"
                         envVars:
-                          - secretEnvVar:
-                              key: "AWS_ACCESS_KEY_ID"
-                              secretName: "jenkins-ecr-credentials"
-                              secretKey: "aws-access-key-id"
-                          - secretEnvVar:
-                              key: "AWS_SECRET_ACCESS_KEY"
-                              secretName: "jenkins-ecr-credentials"
-                              secretKey: "aws-secret-access-key"
-                          - envVar:
-                              key: "AWS_DEFAULT_REGION"
-                              value: "us-east-1"
+                          - secretEnvVar: {key: "AWS_ACCESS_KEY_ID", secretName: "jenkins-ecr-credentials", secretKey: "aws-access-key-id"}
+                          - secretEnvVar: {key: "AWS_SECRET_ACCESS_KEY", secretName: "jenkins-ecr-credentials", secretKey: "aws-secret-access-key"}
+                          - envVar: {key: "AWS_DEFAULT_REGION", value: "us-east-1"}
                   - name: "cd-agent"
                     label: "cd-agent"
                     namespace: "jenkins"
@@ -97,3 +74,7 @@ controller:
                         resourceRequestMemory: "256Mi"
                         resourceLimitCpu: "500m"
                         resourceLimitMemory: "512Mi"
+                        envVars:
+                          - secretEnvVar: {key: "AWS_ACCESS_KEY_ID", secretName: "jenkins-ecr-credentials", secretKey: "aws-access-key-id"}
+                          - secretEnvVar: {key: "AWS_SECRET_ACCESS_KEY", secretName: "jenkins-ecr-credentials", secretKey: "aws-secret-access-key"}
+                          - envVar: {key: "AWS_DEFAULT_REGION", value: "us-east-1"}
