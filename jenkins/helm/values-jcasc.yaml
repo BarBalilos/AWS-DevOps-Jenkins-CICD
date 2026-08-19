@@ -45,7 +45,20 @@ controller:
                           - secretEnvVar: {key: "AWS_ACCESS_KEY_ID", secretName: "jenkins-ecr-credentials", secretKey: "aws-access-key-id"}
                           - secretEnvVar: {key: "AWS_SECRET_ACCESS_KEY", secretName: "jenkins-ecr-credentials", secretKey: "aws-secret-access-key"}
                           - envVar: {key: "AWS_DEFAULT_REGION", value: "us-east-1"}
-                      - name: "kaniko"
+                      - name: "kaniko-backend"
+                        image: "gcr.io/kaniko-project/executor:v1.23.2-debug"
+                        command: "sleep"
+                        args: "9999999"
+                        workingDir: "/home/jenkins/agent"
+                        resourceRequestCpu: "500m"
+                        resourceRequestMemory: "512Mi"
+                        resourceLimitCpu: "1"
+                        resourceLimitMemory: "1Gi"
+                        envVars:
+                          - secretEnvVar: {key: "AWS_ACCESS_KEY_ID", secretName: "jenkins-ecr-credentials", secretKey: "aws-access-key-id"}
+                          - secretEnvVar: {key: "AWS_SECRET_ACCESS_KEY", secretName: "jenkins-ecr-credentials", secretKey: "aws-secret-access-key"}
+                          - envVar: {key: "AWS_DEFAULT_REGION", value: "us-east-1"}
+                      - name: "kaniko-worker"
                         image: "gcr.io/kaniko-project/executor:v1.23.2-debug"
                         command: "sleep"
                         args: "9999999"

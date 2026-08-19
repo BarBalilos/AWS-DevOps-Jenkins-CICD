@@ -42,9 +42,6 @@ pipeline {
                     sh 'git config --global --add safe.directory "*"'
                     script {
                         env.GIT_COMMIT_SHORT = sh(script: 'cd app-src && git rev-parse --short=12 HEAD', returnStdout: true).trim()
-                        // Unique per commit AND per rebuild of that commit — ECR's
-                        // IMMUTABLE tag mode means a bare commit-sha tag could only
-                        // ever be pushed once; appending BUILD_NUMBER lets us retrigger.
                         env.IMAGE_TAG = "${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
                     }
                     echo "app-src @ ${env.GIT_COMMIT_SHORT} (Jenkins build #${env.BUILD_NUMBER}) -> image tag ${env.IMAGE_TAG}"
@@ -109,18 +106,7 @@ pipeline {
 
         stage('Build, Tag & Push (Kaniko)') {
             steps {
-                container('kaniko') {
-                    // Kaniko builds and pushes as one atomic operation — there is
-                    // no separate "tag" step mechanically; the tag is embedded in
-                    // --destination. Documenting this rather than faking a split.
-                    //
-                    // --cleanup is required because both builds run inside the same
-                    // long-lived container filesystem (this pod's kaniko container
-                    // persists across the whole CI run, it's not fresh per build).
-                    // Without it, the backend build leaves installed packages on
-                    // disk that contaminate the worker build's pip install (pip
-                    // reports packages "already satisfied" but they never get
-                    // captured into the worker image's actual layers).
+                container('kaniko-backend') {
                     sh '''
                         set -eu
                         /kaniko/executor \
@@ -130,7 +116,11 @@ pipeline {
                           --digest-file=${WORKSPACE}/backend-digest.txt \
                           --cache=false \
                           --cleanup
-
+                    '''
+                }
+                container('kaniko-worker') {
+                    sh '''
+                        set -eu
                         /kaniko/executor \
                           --context=dir://${WORKSPACE}/app-src/docker/worker \
                           --dockerfile=Dockerfile \
@@ -146,12 +136,6 @@ pipeline {
         stage('Image Scan Results') {
             steps {
                 container('python') {
-                    // Best-effort, non-blocking: ECR scan-on-push is asynchronous
-                    // and can take longer than we want a CI stage to wait. This
-                    // reports whatever is available after a short pause rather
-                    // than gating the build on scan completion (documented
-                    // limitation — a hard quality gate here is listed as a
-                    // possible future enhancement).
                     sh '''
                         set -eu
                         pip install --quiet awscli
