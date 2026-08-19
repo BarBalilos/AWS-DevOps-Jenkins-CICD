@@ -1,47 +1,27 @@
-// pipelines/Jenkinsfile-cd
-//
-// CD pipeline for the devops-app backend + worker services.
-//
-// Responsibility boundary: this pipeline NEVER builds or pushes images. It
-// only takes an already-built, already-scanned, already-pushed image
-// tag+digest (produced by application-ci) and deploys it. All application
-// manifests come from AWS-DevOps-Kubernetes (checked out into app-src/ below,
-// read-only — this pipeline never modifies that repo).
-//
-// Deploy strategy: kubectl apply reconciles the full manifest set (minus
-// namespace/secret files, which are managed out-of-band), then backend/worker
-// images are pinned explicitly by DIGEST (not tag) so the exact tested
-// artifact is what actually runs, immune to any tag mutation.
-
 pipeline {
     agent { label 'cd-agent' }
-
     options {
         timestamps()
         timeout(time: 20, unit: 'MINUTES')
         disableConcurrentBuilds()
     }
-
     parameters {
-        string(name: 'IMAGE_TAG', defaultValue: '', description: 'Immutable image tag produced by CI (e.g. <short-sha>-<build-number>).')
+        string(name: 'IMAGE_TAG', defaultValue: '', description: 'Image tag produced by CI (e.g. <git-sha>-<build-number>).')
         string(name: 'IMAGE_DIGEST', defaultValue: '', description: 'backend=sha256:...,worker=sha256:... — digests produced by CI.')
-        string(name: 'NAMESPACE', defaultValue: 'devops-app', description: 'Target namespace. Manifests are currently hardcoded to devops-app.')
-        string(name: 'TRIGGERED_BY_BUILD', defaultValue: '', description: 'Upstream CI build identifier/URL, for traceability.')
+        string(name: 'NAMESPACE', defaultValue: 'devops-app', description: 'Target Kubernetes namespace.')
+        string(name: 'TRIGGERED_BY_BUILD', defaultValue: '', description: 'Identifier of the upstream CI build that triggered this deploy.')
     }
-
     environment {
-        ECR_REGISTRY    = "938834037970.dkr.ecr.us-east-1.amazonaws.com"
-        AWS_REGION      = "us-east-1"
-        APP_REPO_URL    = "https://github.com/BarBalilos/AWS-DevOps-Kubernetes.git"
+        ECR_REGISTRY = "938834037970.dkr.ecr.us-east-1.amazonaws.com"
+        AWS_REGION = "us-east-1"
+        APP_REPO_URL = "https://github.com/BarBalilos/AWS-DevOps-Kubernetes.git"
         APP_REPO_BRANCH = "main"
     }
-
     stages {
-
         stage('Checkout') {
             steps {
                 container('kubectl') {
-                    sh 'apk add --no-cache git > /dev/null'
+                    sh 'apk add --no-cache git'
                     dir('app-src') {
                         git branch: "${APP_REPO_BRANCH}", url: "${APP_REPO_URL}"
                     }
@@ -56,44 +36,52 @@ pipeline {
                 container('kubectl') {
                     sh '''
                         set -eu
-
-                        if [ -z "${IMAGE_TAG}" ] || [ "${IMAGE_TAG}" = "latest" ]; then
-                          echo "REJECTED: IMAGE_TAG must be a specific immutable tag, not empty or 'latest'. Got: '${IMAGE_TAG}'"
-                          exit 1
+                        if [ -z "${IMAGE_TAG}" ]; then
+                            echo "ERROR: IMAGE_TAG is empty." >&2
+                            exit 1
+                        fi
+                        if [ "${IMAGE_TAG}" = "latest" ]; then
+                            echo "ERROR: IMAGE_TAG must not be 'latest'." >&2
+                            exit 1
                         fi
 
-                        BACKEND_DIGEST=$(echo "${IMAGE_DIGEST}" | tr ',' '\\n' | grep '^backend=' | cut -d'=' -f2-)
-                        WORKER_DIGEST=$(echo "${IMAGE_DIGEST}" | tr ',' '\\n' | grep '^worker=' | cut -d'=' -f2-)
+                        BACKEND_DIGEST=$(echo "${IMAGE_DIGEST}" | tr ',' '\n' | grep '^backend=' | cut -d'=' -f2-)
+                        WORKER_DIGEST=$(echo "${IMAGE_DIGEST}" | tr ',' '\n' | grep '^worker=' | cut -d'=' -f2-)
 
-                        case "$BACKEND_DIGEST" in
-                          sha256:*) ;;
-                          *) echo "REJECTED: backend digest missing/invalid in IMAGE_DIGEST. Got: '${IMAGE_DIGEST}'"; exit 1 ;;
+                        if [ -z "${BACKEND_DIGEST}" ] || [ -z "${WORKER_DIGEST}" ]; then
+                            echo "ERROR: could not parse backend/worker digests from IMAGE_DIGEST." >&2
+                            exit 1
+                        fi
+
+                        case "${BACKEND_DIGEST}" in
+                            sha256:*) ;;
+                            *) echo "ERROR: BACKEND_DIGEST must start with sha256:" >&2; exit 1 ;;
                         esac
-                        case "$WORKER_DIGEST" in
-                          sha256:*) ;;
-                          *) echo "REJECTED: worker digest missing/invalid in IMAGE_DIGEST. Got: '${IMAGE_DIGEST}'"; exit 1 ;;
+                        case "${WORKER_DIGEST}" in
+                            sha256:*) ;;
+                            *) echo "ERROR: WORKER_DIGEST must start with sha256:" >&2; exit 1 ;;
                         esac
 
                         if [ "${NAMESPACE}" != "devops-app" ]; then
-                          echo "REJECTED: manifests are currently hardcoded to namespace 'devops-app'; NAMESPACE='${NAMESPACE}' is not supported yet (multi-env promotion is a future bonus item)."
-                          exit 1
+                            echo "ERROR: NAMESPACE must be devops-app." >&2
+                            exit 1
                         fi
 
                         kubectl get namespace "${NAMESPACE}" > /dev/null
 
-                        echo "$BACKEND_DIGEST" > backend-digest.txt
-                        echo "$WORKER_DIGEST"  > worker-digest.txt
+                        echo "${BACKEND_DIGEST}" > backend-digest.txt
+                        echo "${WORKER_DIGEST}" > worker-digest.txt
 
                         echo "Input validation OK."
                         echo "  IMAGE_TAG:           ${IMAGE_TAG}"
-                        echo "  BACKEND_DIGEST:      $BACKEND_DIGEST"
-                        echo "  WORKER_DIGEST:       $WORKER_DIGEST"
+                        echo "  BACKEND_DIGEST:      ${BACKEND_DIGEST}"
+                        echo "  WORKER_DIGEST:       ${WORKER_DIGEST}"
                         echo "  NAMESPACE:           ${NAMESPACE}"
                         echo "  TRIGGERED_BY_BUILD:  ${TRIGGERED_BY_BUILD}"
                     '''
                     script {
                         env.BACKEND_DIGEST = sh(script: 'cat backend-digest.txt', returnStdout: true).trim()
-                        env.WORKER_DIGEST  = sh(script: 'cat worker-digest.txt', returnStdout: true).trim()
+                        env.WORKER_DIGEST = sh(script: 'cat worker-digest.txt', returnStdout: true).trim()
                     }
                 }
             }
@@ -108,14 +96,16 @@ pipeline {
                         echo "Manifests to apply (namespace/secret files excluded by design):"
                         cat manifest-files.txt
 
+                        echo "-- Dry-run (client) validation --"
                         while IFS= read -r f; do
-                          echo "-- dry-run client: $f --"
-                          kubectl apply --dry-run=client -f "$f"
+                            echo "-- dry-run client: ${f} --"
+                            kubectl apply --dry-run=client -f "${f}"
                         done < manifest-files.txt
 
+                        echo "-- Dry-run (server) validation --"
                         while IFS= read -r f; do
-                          echo "-- dry-run server: $f --"
-                          kubectl apply --dry-run=server -f "$f"
+                            echo "-- dry-run server: ${f} --"
+                            kubectl apply --dry-run=server -f "${f}"
                         done < manifest-files.txt
                     '''
                 }
@@ -128,12 +118,8 @@ pipeline {
                     sh '''
                         set -eu
                         echo "Running as ServiceAccount: system:serviceaccount:jenkins:jenkins-cd-agent (in-cluster auth)"
-
-                        kubectl auth can-i patch deployments -n "${NAMESPACE}" \
-                          || { echo "Missing deployments patch permission in ${NAMESPACE}"; exit 1; }
-                        kubectl auth can-i create pods --subresource=exec -n "${NAMESPACE}" \
-                          || { echo "Missing pods/exec create permission in ${NAMESPACE} (needed for smoke test)"; exit 1; }
-
+                        kubectl auth can-i patch deployments -n "${NAMESPACE}"
+                        kubectl auth can-i create pods --subresource=exec -n "${NAMESPACE}"
                         echo "RBAC sanity checks passed."
                     '''
                 }
@@ -143,14 +129,10 @@ pipeline {
         stage('Refresh ECR Pull Secret') {
             steps {
                 container('kubectl') {
-                    // ecr-pull-secret is bootstrapped once out-of-band (see README);
-                    // this only ever updates its value using a fresh short-lived
-                    // ECR token (12h TTL) — RBAC grants get/update/patch on this
-                    // exact secret name only, never create (see rbac/cd-deploy-rbac.yaml).
                     sh '''
                         set -eu
                         aws --version > /dev/null 2>&1 || apk add --no-cache aws-cli
-
+                        set +x
                         ECR_PASSWORD=$(aws ecr get-login-password --region "${AWS_REGION}")
                         kubectl create secret docker-registry ecr-pull-secret \
                           --docker-server="${ECR_REGISTRY}" \
@@ -158,12 +140,9 @@ pipeline {
                           --docker-password="${ECR_PASSWORD}" \
                           -n "${NAMESPACE}" \
                           --dry-run=client -o yaml | kubectl apply -f -
-
-                        kubectl patch serviceaccount backend-sa -n "${NAMESPACE}" \
-                          --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
-                        kubectl patch serviceaccount worker-sa -n "${NAMESPACE}" \
-                          --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
-
+                        set -x
+                        kubectl patch serviceaccount backend-sa -n "${NAMESPACE}" --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
+                        kubectl patch serviceaccount worker-sa -n "${NAMESPACE}" --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
                         echo "ECR pull secret refreshed and linked to backend-sa/worker-sa."
                     '''
                 }
@@ -175,37 +154,23 @@ pipeline {
                 container('kubectl') {
                     sh '''
                         set -eu
-
                         while IFS= read -r f; do
-                          echo "-- apply: $f --"
-                          kubectl apply -f "$f"
+                            echo "-- apply: ${f} --"
+                            kubectl apply -f "${f}"
                         done < manifest-files.txt
 
                         BACKEND_DIGEST=$(cat backend-digest.txt)
                         WORKER_DIGEST=$(cat worker-digest.txt)
 
                         echo "Pinning backend to digest ${BACKEND_DIGEST}..."
-                        kubectl set image deployment/backend \
-                          backend="${ECR_REGISTRY}/devops-app-backend@${BACKEND_DIGEST}" \
-                          -n "${NAMESPACE}"
+                        kubectl set image deployment/backend backend="${ECR_REGISTRY}/devops-app-backend@${BACKEND_DIGEST}" -n "${NAMESPACE}"
 
                         echo "Pinning worker to digest ${WORKER_DIGEST}..."
-                        kubectl set image deployment/worker \
-                          worker="${ECR_REGISTRY}/devops-app-worker@${WORKER_DIGEST}" \
-                          -n "${NAMESPACE}"
+                        kubectl set image deployment/worker worker="${ECR_REGISTRY}/devops-app-worker@${WORKER_DIGEST}" -n "${NAMESPACE}"
 
-                        kubectl annotate deployment/backend -n "${NAMESPACE}" \
-                          deployed-image-tag="${IMAGE_TAG}" \
-                          deployed-by-build="${TRIGGERED_BY_BUILD}" \
-                          --overwrite
-                        kubectl annotate deployment/worker -n "${NAMESPACE}" \
-                          deployed-image-tag="${IMAGE_TAG}" \
-                          deployed-by-build="${TRIGGERED_BY_BUILD}" \
-                          --overwrite
+                        kubectl annotate deployment/backend -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" --overwrite
+                        kubectl annotate deployment/worker -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" --overwrite
 
-                        # Force fresh pods even if the digest is unchanged from a prior
-                        # (e.g. failed) run, so any newly-applied ServiceAccount/secret
-                        # changes are actually picked up rather than leaving stale pods.
                         kubectl rollout restart deployment/backend -n "${NAMESPACE}"
                         kubectl rollout restart deployment/worker -n "${NAMESPACE}"
                     '''
@@ -219,7 +184,7 @@ pipeline {
                     sh '''
                         set -eu
                         kubectl rollout status deployment/backend -n "${NAMESPACE}" --timeout=180s
-                        kubectl rollout status deployment/worker  -n "${NAMESPACE}" --timeout=180s
+                        kubectl rollout status deployment/worker -n "${NAMESPACE}" --timeout=180s
                     '''
                 }
             }
@@ -238,12 +203,17 @@ pipeline {
                         RUNNING_BACKEND=$(kubectl get deployment backend -n "${NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[0].image}')
                         RUNNING_WORKER=$(kubectl get deployment worker -n "${NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[0].image}')
 
-                        echo "backend running image: $RUNNING_BACKEND"
-                        echo "worker running image:  $RUNNING_WORKER"
+                        echo "backend running image: ${RUNNING_BACKEND}"
+                        echo "worker running image:  ${RUNNING_WORKER}"
 
-                        echo "$RUNNING_BACKEND" | grep -q "${BACKEND_DIGEST}" || { echo "MISMATCH: backend is not running the expected digest"; exit 1; }
-                        echo "$RUNNING_WORKER"  | grep -q "${WORKER_DIGEST}"  || { echo "MISMATCH: worker is not running the expected digest"; exit 1; }
-
+                        if ! echo "${RUNNING_BACKEND}" | grep -q "${BACKEND_DIGEST}"; then
+                            echo "ERROR: running backend image does not match expected digest ${BACKEND_DIGEST}" >&2
+                            exit 1
+                        fi
+                        if ! echo "${RUNNING_WORKER}" | grep -q "${WORKER_DIGEST}"; then
+                            echo "ERROR: running worker image does not match expected digest ${WORKER_DIGEST}" >&2
+                            exit 1
+                        fi
                         echo "Verified: running images match the requested digests."
                     '''
                 }
@@ -259,12 +229,10 @@ pipeline {
                         WORKER_POD=$(kubectl get pods -n "${NAMESPACE}" -l app=worker -o jsonpath='{.items[0].metadata.name}')
 
                         echo "Smoke-testing backend pod ${BACKEND_POD} at /api/health ..."
-                        kubectl exec -n "${NAMESPACE}" "${BACKEND_POD}" -- \
-                          python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:5000/api/health', timeout=5).status)"
+                        kubectl exec -n "${NAMESPACE}" "${BACKEND_POD}" -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:5000/api/health', timeout=5).status)"
 
                         echo "Smoke-testing worker pod ${WORKER_POD} at /health ..."
-                        kubectl exec -n "${NAMESPACE}" "${WORKER_POD}" -- \
-                          python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:5001/health', timeout=5).status)"
+                        kubectl exec -n "${NAMESPACE}" "${WORKER_POD}" -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:5001/health', timeout=5).status)"
                     '''
                 }
             }
@@ -284,16 +252,14 @@ pipeline {
         failure {
             container('kubectl') {
                 sh '''
-                    echo "== Recent events in ${NAMESPACE} (diagnostics) =="
                     kubectl get events -n "${NAMESPACE}" --sort-by=.lastTimestamp | tail -50 || true
                 '''
             }
-            echo '''
-CD FAILED. This pipeline does not auto-rollback. To manually roll back:
+            echo """
+CD FAILED. Manual rollback:
   kubectl rollout undo deployment/backend -n devops-app
-  kubectl rollout undo deployment/worker  -n devops-app
-Then re-run application-cd with a known-good IMAGE_TAG/IMAGE_DIGEST once the root cause is fixed.
-'''
+  kubectl rollout undo deployment/worker -n devops-app
+"""
         }
     }
 }
