@@ -1,0 +1,97 @@
+# jenkins/helm/values.yaml
+# Base hardened configuration for the Jenkins controller.
+# Chart: jenkins/jenkins v5.9.54 (Jenkins 2.568.2, JDK 21)
+# Security realm / Kubernetes cloud / CI+CD agent pod templates are
+# layered on top later via jenkins/helm/values-jcasc.yaml (JCasC).
+
+controller:
+  image:
+    repository: "jenkins/jenkins"
+    tag: "2.568.2-jdk21"
+  imagePullPolicy: IfNotPresent
+
+  resources:
+    requests:
+      cpu: "500m"
+      memory: "1Gi"
+    limits:
+      cpu: "1"
+      memory: "2Gi"
+
+  startupProbe:
+    httpGet:
+      path: "/login"
+      port: http
+    initialDelaySeconds: 30
+    periodSeconds: 10
+    failureThreshold: 12
+    timeoutSeconds: 5
+
+  livenessProbe:
+    httpGet:
+      path: "/login"
+      port: http
+    periodSeconds: 10
+    failureThreshold: 5
+    timeoutSeconds: 5
+
+  readinessProbe:
+    httpGet:
+      path: "/login"
+      port: http
+    periodSeconds: 10
+    failureThreshold: 3
+    timeoutSeconds: 5
+
+  # Chart already defaults to non-root uid 1000 + readOnlyRootFilesystem +
+  # no privilege escalation; we keep those and make them fully explicit,
+  # plus drop all Linux capabilities.
+  containerSecurityContext:
+    runAsNonRoot: true
+    runAsUser: 1000
+    runAsGroup: 1000
+    readOnlyRootFilesystem: true
+    allowPrivilegeEscalation: false
+    capabilities:
+      drop: ["ALL"]
+
+  # Explicit plugin list — installed at controller startup, fully
+  # reproducible from code (no manual "Manage Plugins" clicking).
+  # The first 4 versions are the chart's own confirmed-compatible pins
+  # for this Jenkins/chart version; the rest resolve to latest-compatible
+  # at install time (documented trade-off — see README).
+  installPlugins:
+    - kubernetes:4540.v612369217f87
+    - workflow-aggregator:608.v67378e9d3db_1
+    - git:5.10.1
+    - configuration-as-code:2117.vc05a_0b_e6b_f4e
+    - github
+    - job-dsl
+    - credentials-binding
+    - pipeline-utility-steps
+    - matrix-auth
+    - timestamper
+    - ws-cleanup
+    - junit
+
+  # No public exposure — internal ClusterIP only, reached via
+  # kubectl port-forward until we make a deliberate Ingress decision.
+  serviceType: ClusterIP
+
+serviceAccount:
+  create: true
+  name: "jenkins"
+
+persistence:
+  enabled: true
+  storageClass: "local-path"
+  size: "8Gi"
+
+rbac:
+  create: true
+  readSecrets: false
+
+agent:
+  # We define our own CI and CD agent pod templates via JCasC instead;
+  # disable the chart's built-in default agent template entirely.
+  enabled: false

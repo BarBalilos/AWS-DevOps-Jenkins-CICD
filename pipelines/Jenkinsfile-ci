@@ -1,0 +1,216 @@
+// pipelines/Jenkinsfile-ci
+//
+// CI pipeline for the devops-app backend + worker services.
+// Source of truth for code/Dockerfiles/tests: AWS-DevOps-Kubernetes (checked
+// out into app-src/ below — this pipeline's own repo is never itself checked
+// out, since nothing else in it is needed at runtime).
+//
+// Responsibility boundary: this pipeline NEVER deploys anything. It only
+// validates, tests, builds, tags (immutably, per-commit), and pushes to ECR.
+// On success it triggers application-cd with the resulting tag/digests —
+// application-cd is the only thing that ever touches the cluster.
+// The frontend service is intentionally excluded — it uses the stock
+// nginxinc/nginx-unprivileged image with no custom Dockerfile to build.
+
+pipeline {
+    agent { label 'ci-agent' }
+
+    options {
+        timestamps()
+        timeout(time: 30, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+
+    environment {
+        // Not secrets — just config, deliberately centralized here instead
+        // of being repeated as inline literals throughout the pipeline.
+        ECR_REGISTRY   = "938834037970.dkr.ecr.us-east-1.amazonaws.com"
+        AWS_REGION     = "us-east-1"
+        APP_REPO_URL   = "https://github.com/BarBalilos/AWS-DevOps-Kubernetes.git"
+        APP_REPO_BRANCH = "main"
+    }
+
+    stages {
+
+        stage('Checkout') {
+            steps {
+                container('python') {
+                    sh 'apt-get update -qq && apt-get install -y -qq git > /dev/null 2>&1'
+                    dir('app-src') {
+                        git branch: "${APP_REPO_BRANCH}", url: "${APP_REPO_URL}"
+                    }
+                    script {
+                        env.GIT_COMMIT_SHORT = sh(script: 'cd app-src && git rev-parse --short=12 HEAD', returnStdout: true).trim()
+                        // Unique per commit AND per rebuild of that commit — ECR's
+                        // IMMUTABLE tag mode means a bare commit-sha tag could only
+                        // ever be pushed once; appending BUILD_NUMBER lets us retrigger.
+                        env.IMAGE_TAG = "${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
+                    }
+                    echo "app-src @ ${env.GIT_COMMIT_SHORT} (Jenkins build #${env.BUILD_NUMBER}) -> image tag ${env.IMAGE_TAG}"
+                }
+            }
+        }
+
+        stage('Validation') {
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        for svc in backend worker; do
+                          test -f "app-src/docker/$svc/Dockerfile"
+                          test -f "app-src/docker/$svc/requirements.txt"
+                          test -f "app-src/docker/$svc/requirements-test.txt"
+                        done
+                        echo "Validation OK: Dockerfile + requirements(+test) present for backend and worker."
+                        echo "NOTE: frontend is excluded from this pipeline — it uses the stock"
+                        echo "nginxinc/nginx-unprivileged:alpine image, no custom Dockerfile to build."
+                    '''
+                }
+            }
+        }
+
+        stage('Lint / Static Analysis') {
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        pip install --quiet flake8==7.1.1
+                        echo "== backend =="
+                        flake8 --max-line-length=120 app-src/docker/backend/app.py
+                        echo "== worker =="
+                        flake8 --max-line-length=120 app-src/docker/worker/worker.py
+                    '''
+                }
+            }
+        }
+
+        stage('Tests') {
+            steps {
+                container('python') {
+                    sh '''
+                        set -eu
+                        echo "== backend tests =="
+                        ( cd app-src/docker/backend && pip install --quiet -r requirements-test.txt \
+                          && mkdir -p reports && python -m pytest --junitxml=reports/junit.xml )
+
+                        echo "== worker tests =="
+                        ( cd app-src/docker/worker && pip install --quiet -r requirements-test.txt \
+                          && mkdir -p reports && python -m pytest --junitxml=reports/junit.xml )
+                    '''
+                }
+            }
+            post {
+                always {
+                    junit testResults: 'app-src/docker/*/reports/junit.xml', allowEmptyResults: false
+                }
+            }
+        }
+
+        stage('Build, Tag & Push (Kaniko)') {
+            steps {
+                container('kaniko') {
+                    // Kaniko builds and pushes as one atomic operation — there is
+                    // no separate "tag" step mechanically; the tag is embedded in
+                    // --destination. Documenting this rather than faking a split.
+                    sh '''
+                        set -eu
+                        /kaniko/executor \
+                          --context=dir:///home/jenkins/agent/app-src/docker/backend \
+                          --dockerfile=Dockerfile \
+                          --destination=${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG} \
+                          --digest-file=/home/jenkins/agent/backend-digest.txt \
+                          --cache=false
+
+                        /kaniko/executor \
+                          --context=dir:///home/jenkins/agent/app-src/docker/worker \
+                          --dockerfile=Dockerfile \
+                          --destination=${ECR_REGISTRY}/devops-app-worker:${IMAGE_TAG} \
+                          --digest-file=/home/jenkins/agent/worker-digest.txt \
+                          --cache=false
+                    '''
+                }
+            }
+        }
+
+        stage('Image Scan Results') {
+            steps {
+                container('python') {
+                    // Best-effort, non-blocking: ECR scan-on-push is asynchronous
+                    // and can take longer than we want a CI stage to wait. This
+                    // reports whatever is available after a short pause rather
+                    // than gating the build on scan completion (documented
+                    // limitation — a hard quality gate here is listed as a
+                    // possible future enhancement).
+                    sh '''
+                        set -eu
+                        pip install --quiet awscli
+                        echo "Waiting briefly for ECR scan-on-push (best-effort, non-blocking)..."
+                        sleep 20
+                        for repo in devops-app-backend devops-app-worker; do
+                          echo "== $repo:${IMAGE_TAG} =="
+                          aws ecr describe-image-scan-findings \
+                            --repository-name "$repo" \
+                            --image-id imageTag="${IMAGE_TAG}" \
+                            --region "${AWS_REGION}" \
+                            --query "imageScanStatus" --output json \
+                            || echo "(scan status not yet available)"
+                        done
+                    '''
+                }
+            }
+        }
+
+        stage('Publish Metadata') {
+            steps {
+                container('python') {
+                    script {
+                        env.BACKEND_DIGEST = sh(script: 'cat backend-digest.txt', returnStdout: true).trim()
+                        env.WORKER_DIGEST  = sh(script: 'cat worker-digest.txt', returnStdout: true).trim()
+                    }
+                    sh '''
+                        cat > image-metadata.json <<JSON
+{
+  "git_commit": "${GIT_COMMIT_SHORT}",
+  "build_number": "${BUILD_NUMBER}",
+  "image_tag": "${IMAGE_TAG}",
+  "backend_image": "${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG}",
+  "backend_digest": "${BACKEND_DIGEST}",
+  "worker_image": "${ECR_REGISTRY}/devops-app-worker:${IMAGE_TAG}",
+  "worker_digest": "${WORKER_DIGEST}"
+}
+JSON
+                        cat image-metadata.json
+                    '''
+                    archiveArtifacts artifacts: 'image-metadata.json', fingerprint: true
+                }
+            }
+        }
+    }
+
+    post {
+        always {
+            container('python') {
+                sh 'rm -f backend-digest.txt worker-digest.txt || true'
+            }
+            cleanWs(deleteDirs: true, notFailBuild: true)
+        }
+        success {
+            script {
+                def digestParam = "backend=${env.BACKEND_DIGEST},worker=${env.WORKER_DIGEST}"
+                build job: 'application-cd',
+                      parameters: [
+                          string(name: 'IMAGE_TAG', value: env.IMAGE_TAG),
+                          string(name: 'IMAGE_DIGEST', value: digestParam),
+                          string(name: 'NAMESPACE', value: 'devops-app'),
+                          string(name: 'TRIGGERED_BY_BUILD', value: "${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BUILD_URL})")
+                      ],
+                      wait: false,
+                      propagate: false
+            }
+            echo "CI succeeded: ${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG} and ${ECR_REGISTRY}/devops-app-worker:${IMAGE_TAG} pushed. Triggered application-cd."
+        }
+        failure {
+            echo "CI failed — no image was fully published; application-cd will NOT be triggered."
+        }
+    }
+}

@@ -1,0 +1,7 @@
+# secrets / credentials — never commit real values
+iam/*access-key*.json
+**/secret.yaml
+**/*.kubeconfig
+**/values.local.yaml
+*.env
+.env.*

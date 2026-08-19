@@ -1,0 +1,59 @@
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-cd-agent
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/part-of: jenkins-cicd
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-cd-deployer
+  namespace: devops-app
+rules:
+  # Deployments: manage — apply manifests, update image tag, drive rollout.
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # ReplicaSets/Pods: read-only — needed for rollout status, verify, smoke test.
+  - apiGroups: ["apps"]
+    resources: ["replicasets"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: [""]
+    resources: ["pods"]
+    verbs: ["get", "list", "watch"]
+  # Pods/exec: needed ONLY for the smoke-test stage (kubectl exec + local
+  # curl-equivalent inside the already-deployed Pod). Nothing else uses this.
+  - apiGroups: [""]
+    resources: ["pods/exec"]
+    verbs: ["create"]
+  # Services / ConfigMaps / ServiceAccounts: manage — part of the app manifests.
+  - apiGroups: [""]
+    resources: ["services", "configmaps", "serviceaccounts"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Events: read-only — failure diagnostics.
+  - apiGroups: [""]
+    resources: ["events"]
+    verbs: ["get", "list", "watch"]
+  # Ingress / NetworkPolicy: manage — part of the app manifests.
+  - apiGroups: ["networking.k8s.io"]
+    resources: ["ingresses", "networkpolicies"]
+    verbs: ["get", "list", "watch", "create", "update", "patch"]
+  # Deliberately excluded: secrets (provisioned separately, outside CD's
+  # blast radius), delete verb (rollback uses `kubectl rollout undo`, not
+  # delete), and namespaces (this Role is namespace-scoped, not cluster-scoped).
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-cd-agent-binding
+  namespace: devops-app
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-cd-agent
+    namespace: jenkins
+roleRef:
+  kind: Role
+  name: jenkins-cd-deployer
+  apiGroup: rbac.authorization.k8s.io
