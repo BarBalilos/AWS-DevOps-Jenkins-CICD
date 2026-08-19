@@ -45,6 +45,7 @@ pipeline {
                     dir('app-src') {
                         git branch: "${APP_REPO_BRANCH}", url: "${APP_REPO_URL}"
                     }
+                    sh 'git config --global --add safe.directory "*"'
                     echo "Checked out app-src @ branch ${APP_REPO_BRANCH} (manifests only — no build happens here)."
                 }
             }

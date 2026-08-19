@@ -39,6 +39,7 @@ pipeline {
                     dir('app-src') {
                         git branch: "${APP_REPO_BRANCH}", url: "${APP_REPO_URL}"
                     }
+                    sh 'git config --global --add safe.directory "*"'
                     script {
                         env.GIT_COMMIT_SHORT = sh(script: 'cd app-src && git rev-parse --short=12 HEAD', returnStdout: true).trim()
                         // Unique per commit AND per rebuild of that commit — ECR's
