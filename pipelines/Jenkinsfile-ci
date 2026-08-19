@@ -113,6 +113,14 @@ pipeline {
                     // Kaniko builds and pushes as one atomic operation — there is
                     // no separate "tag" step mechanically; the tag is embedded in
                     // --destination. Documenting this rather than faking a split.
+                    //
+                    // --cleanup is required because both builds run inside the same
+                    // long-lived container filesystem (this pod's kaniko container
+                    // persists across the whole CI run, it's not fresh per build).
+                    // Without it, the backend build leaves installed packages on
+                    // disk that contaminate the worker build's pip install (pip
+                    // reports packages "already satisfied" but they never get
+                    // captured into the worker image's actual layers).
                     sh '''
                         set -eu
                         /kaniko/executor \
@@ -120,14 +128,16 @@ pipeline {
                           --dockerfile=Dockerfile \
                           --destination=${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG} \
                           --digest-file=${WORKSPACE}/backend-digest.txt \
-                          --cache=false
+                          --cache=false \
+                          --cleanup
 
                         /kaniko/executor \
                           --context=dir://${WORKSPACE}/app-src/docker/worker \
                           --dockerfile=Dockerfile \
                           --destination=${ECR_REGISTRY}/devops-app-worker:${IMAGE_TAG} \
                           --digest-file=${WORKSPACE}/worker-digest.txt \
-                          --cache=false
+                          --cache=false \
+                          --cleanup
                     '''
                 }
             }
