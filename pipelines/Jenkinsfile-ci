@@ -116,17 +116,17 @@ pipeline {
                     sh '''
                         set -eu
                         /kaniko/executor \
-                          --context=dir:///home/jenkins/agent/app-src/docker/backend \
+                          --context=dir://${WORKSPACE}/app-src/docker/backend \
                           --dockerfile=Dockerfile \
                           --destination=${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG} \
-                          --digest-file=/home/jenkins/agent/backend-digest.txt \
+                          --digest-file=${WORKSPACE}/backend-digest.txt \
                           --cache=false
 
                         /kaniko/executor \
-                          --context=dir:///home/jenkins/agent/app-src/docker/worker \
+                          --context=dir://${WORKSPACE}/app-src/docker/worker \
                           --dockerfile=Dockerfile \
                           --destination=${ECR_REGISTRY}/devops-app-worker:${IMAGE_TAG} \
-                          --digest-file=/home/jenkins/agent/worker-digest.txt \
+                          --digest-file=${WORKSPACE}/worker-digest.txt \
                           --cache=false
                     '''
                 }
