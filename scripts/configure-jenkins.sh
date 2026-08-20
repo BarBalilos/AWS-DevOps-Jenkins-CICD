@@ -44,11 +44,17 @@ echo ">> Creating/updating jenkins-ecr-credentials Secret..."
 if [ ! -f "${ACCESS_KEY_FILE}" ]; then
   echo "!! ${ACCESS_KEY_FILE} not found." >&2
   echo "!! Create it locally (gitignored) with the jenkins-ci-ecr IAM user's" >&2
-  echo "!! access key, shaped: {\"AccessKeyId\": \"...\", \"SecretAccessKey\": \"...\"}" >&2
+  echo "!! access key, shaped like raw 'aws iam create-access-key' output:" >&2
+  echo "!! {\"AccessKey\": {\"AccessKeyId\": \"...\", \"SecretAccessKey\": \"...\"}}" >&2
   exit 1
 fi
-AWS_ACCESS_KEY_ID=$(jq -r '.AccessKeyId' "${ACCESS_KEY_FILE}")
-AWS_SECRET_ACCESS_KEY=$(jq -r '.SecretAccessKey' "${ACCESS_KEY_FILE}")
+AWS_ACCESS_KEY_ID=$(jq -r '.AccessKey.AccessKeyId' "${ACCESS_KEY_FILE}")
+AWS_SECRET_ACCESS_KEY=$(jq -r '.AccessKey.SecretAccessKey' "${ACCESS_KEY_FILE}")
+if [ "${AWS_ACCESS_KEY_ID}" = "null" ] || [ "${AWS_SECRET_ACCESS_KEY}" = "null" ]; then
+  echo "!! Failed to extract AccessKeyId/SecretAccessKey from ${ACCESS_KEY_FILE}." >&2
+  echo "!! Check the file's shape matches {\"AccessKey\": {\"AccessKeyId\": ..., \"SecretAccessKey\": ...}}." >&2
+  exit 1
+fi
 kubectl create secret generic jenkins-ecr-credentials \
   --namespace "${NAMESPACE}" \
   --from-literal=aws-access-key-id="${AWS_ACCESS_KEY_ID}" \

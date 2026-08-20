@@ -65,7 +65,7 @@ AWS-DevOps-Jenkins-CICD/
 - `helm` (v3), `jq`, `aws` CLI configured with credentials that can manage IAM/ECR (used only for one-time setup, never used by Jenkins itself).
 - Two ECR repositories already created: `devops-app-backend`, `devops-app-worker`.
 - A scoped IAM user (`jenkins-ci-ecr`) with only the permissions in [`iam/jenkins-ci-ecr-policy.json`](iam/jenkins-ci-ecr-policy.json) — push/pull/describe/scan-read on exactly those two repositories, plus `ecr:GetAuthorizationToken`. This user is **never** the broad account-admin IAM user; it exists solely so Jenkins' blast radius is capped at two ECR repos.
-- A local, gitignored access-key file for that user at `iam/jenkins-ci-ecr-access-key.json`, shaped `{"AccessKeyId": "...", "SecretAccessKey": "..."}`.
+- A local, gitignored access-key file for that user at `iam/jenkins-ci-ecr-access-key.json`, shaped like raw `aws iam create-access-key` output: `{"AccessKey": {"AccessKeyId": "...", "SecretAccessKey": "..."}}`.
 
 ## Setup & Deployment
 
@@ -142,7 +142,7 @@ No ClusterRole with wildcard resources, no `cluster-admin` binding, anywhere in 
 - **Jenkins admin credential** is chart-managed: Helm auto-generates it as a Kubernetes Secret on install. It's retrieved on demand (`kubectl exec ... cat /run/secrets/additional/chart-admin-password`) and never written to a file.
 - **AWS credentials** (`jenkins-ecr-credentials`, a Kubernetes Secret in the `jenkins` namespace) hold the `jenkins-ci-ecr` IAM user's access key. They're injected only into the containers that actually need AWS access — `python`, `kaniko-backend`, `kaniko-worker` in `ci-agent`, and `kubectl` in `cd-agent` — never into the `jnlp` agent-connection container, which has no need for them.
 - **Console log masking**: the CD pipeline's ECR-login step wraps the password retrieval in `set +x` / `set -x` specifically so the token never appears in Jenkins console output, verified by inspecting real build logs.
-- **Rotation**: documented per-credential in `credentials/credentials.example.yaml` — rotating the IAM access key means issuing a new key via AWS IAM, updating the local (gitignored) `iam/jenkins-ci-ecr-access-key.json`, re-running `configure-jenkins.sh` to refresh the Kubernetes Secret, and deactivating/deleting the old key once builds confirm the new one works.
+- **Rotation**: documented per-credential in `credentials/credentials.example.yaml` — rotating the IAM access key means issuing a new key via AWS IAM, updating the local (gitignored) `iam/jenkins-ci-ecr-access-key.json`, re-running `configure-jenkins.sh` to refresh the Kubernetes Secret, and deactivating/deleting the old key once builds confirm the new one works. `configure-jenkins.sh` fails loudly (rather than silently writing a broken credential) if the access-key file's shape doesn't match what it expects.
 
 ### Build execution
 
