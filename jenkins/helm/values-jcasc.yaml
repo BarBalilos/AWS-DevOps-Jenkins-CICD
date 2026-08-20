@@ -31,6 +31,25 @@ controller:
                     serviceAccount: "jenkins-ci-agent"
                     idleMinutes: 5
                     podRetention: "never"
+                    yamlMergeStrategy: "merge"
+                    yaml: |
+                      spec:
+                        containers:
+                          - name: python
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              seccompProfile:
+                                type: RuntimeDefault
+                          - name: kaniko-backend
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              seccompProfile:
+                                type: RuntimeDefault
+                          - name: kaniko-worker
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              seccompProfile:
+                                type: RuntimeDefault
                     containers:
                       - name: "python"
                         image: "python:3.11-slim"
@@ -77,6 +96,15 @@ controller:
                     serviceAccount: "jenkins-cd-agent"
                     idleMinutes: 5
                     podRetention: "never"
+                    yamlMergeStrategy: "merge"
+                    yaml: |
+                      spec:
+                        containers:
+                          - name: kubectl
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              seccompProfile:
+                                type: RuntimeDefault
                     containers:
                       - name: "kubectl"
                         image: "alpine/k8s:1.31.2"

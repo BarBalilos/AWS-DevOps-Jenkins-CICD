@@ -1,0 +1,35 @@
+flowchart TD
+    Start(["Push to GitHub<br/>(Jenkins-CICD or Kubernetes repo)"]) --> Poll["Jenkins SCM Poll<br/>H/5 * * * * on Jenkinsfile-ci"]
+    Poll --> CITrigger["Job: application-ci triggered"]
+
+    subgraph CI["CI Pipeline (application-ci) — runs on ci-agent pod<br/>SA: jenkins-ci-agent — NO Kubernetes deploy permission"]
+        direction TB
+        C1["Checkout<br/>clone Jenkinsfile-ci (Jenkins-CICD repo)<br/>+ app-src (Kubernetes repo)"]
+        C2["Validation<br/>confirm Dockerfile + requirements(+test)<br/>present for backend &amp; worker"]
+        C3["Lint / Static Analysis<br/>flake8 backend + worker"]
+        C4["Tests<br/>pytest backend + worker<br/>JUnit results recorded"]
+        C5["Build, Tag &amp; Push (Kaniko)<br/>separate kaniko-backend / kaniko-worker containers<br/>push images tagged &lt;git-sha&gt;-&lt;build#&gt;<br/>capture image digests"]
+        C6["Image Scan Results<br/>ECR scan-on-push status<br/>best-effort, non-blocking"]
+        C7["Publish Metadata<br/>image-metadata.json archived<br/>commit, build#, tag, digests"]
+        C1 --> C2 --> C3 --> C4 --> C5 --> C6 --> C7
+    end
+
+    CITrigger --> C1
+    C7 --> CDTrigger["build step triggers application-cd<br/>with IMAGE_TAG + digests as parameters"]
+
+    subgraph CD["CD Pipeline (application-cd) — runs on cd-agent pod<br/>SA: jenkins-cd-agent — scoped to devops-app namespace"]
+        direction TB
+        D1["Checkout<br/>clone Jenkinsfile-cd (Jenkins-CICD repo)<br/>+ k8s manifests (Kubernetes repo)"]
+        D2["Input Validation<br/>verify IMAGE_TAG/digests non-empty,<br/>devops-app namespace exists"]
+        D3["Manifest Discovery &amp; Validation<br/>dry-run client + server on all<br/>k8s/*.yaml, excl. namespace/secret files"]
+        D4["Authenticate / RBAC Sanity Check<br/>kubectl auth can-i patch deployments,<br/>create pods/exec -n devops-app"]
+        D5["Refresh ECR Pull Secret<br/>recreate ecr-pull-secret from STS token,<br/>link to backend-sa / worker-sa"]
+        D6["Deploy<br/>apply manifests, kubectl set image<br/>backend/worker by DIGEST, not tag,<br/>annotate + rollout restart"]
+        D7["Rollout<br/>kubectl rollout status, 180s timeout"]
+        D8["Verify<br/>confirm running image digest<br/>matches requested digest"]
+        D9["Smoke Test<br/>exec into pods, curl /api/health<br/>and /health -&gt; expect 200"]
+        D1 --> D2 --> D3 --> D4 --> D5 --> D6 --> D7 --> D8 --> D9
+    end
+
+    CDTrigger --> D1
+    D9 --> Done(["CD succeeded — images live in devops-app,<br/>traceable to application-ci build #"])

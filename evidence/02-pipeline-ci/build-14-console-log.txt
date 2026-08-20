@@ -1,0 +1,165 @@
+Evidence: application-ci build #14 — full console output
+Captured live during this project's implementation session.
+Demonstrates: SCM-triggered build on a fresh ci-agent pod (no deploy permission),
+checkout of Jenkinsfile-ci (this repo) + app source (AWS-DevOps-Kubernetes),
+lint, unit tests, Kaniko build+push to ECR (tagged <git-sha>-<build#>),
+ECR scan-status read, metadata publish, and automatic trigger of application-cd.
+================================================================================
+
+Started by user admin
+Obtained pipelines/Jenkinsfile-ci from git https://github.com/BarBalilos/AWS-DevOps-Jenkins-CICD.git
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Agent ci-agent-g90b8 is provisioned from template ci-agent
+Running on ci-agent-g90b8 in /home/jenkins/agent/workspace/application-ci
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Declarative: Checkout SCM)
+Cloning repository https://github.com/BarBalilos/AWS-DevOps-Jenkins-CICD.git
+Checking out Revision 72119d85f8caed4fc6c1708d4cf130f46fda57eb (refs/remotes/origin/main)
+Commit message: "Prevent ECR token from leaking into Jenkins console log"
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Checkout)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+18:55:52  + apt-get update -qq
+18:56:04  + apt-get install -y -qq git
+[Pipeline] dir
+18:57:56  Running in /home/jenkins/agent/workspace/application-ci/app-src
+[Pipeline] git
+18:57:56  Cloning repository https://github.com/BarBalilos/AWS-DevOps-Kubernetes.git
+18:57:57  Checking out Revision bfc433f10ad2e5a499097268f17914dfd4586ff6 (refs/remotes/origin/main)
+18:57:58  Commit message: "Ensure exactly one trailing newline (flake8 W292)"
+[Pipeline] echo
+18:57:59  app-src @ bfc433f10ad2 (Jenkins build #14) -> image tag bfc433f10ad2-14
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Validation)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+18:57:59  Validation OK: Dockerfile + requirements(+test) present for backend and worker.
+18:57:59  NOTE: frontend is excluded from this pipeline — it uses the stock
+18:57:59  nginxinc/nginx-unprivileged:alpine image, no custom Dockerfile to build.
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Lint / Static Analysis)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+18:58:00  + pip install --quiet flake8==7.1.1
+18:58:07  + echo == backend ==
+18:58:07  + flake8 --max-line-length=120 app-src/docker/backend/app.py
+18:58:08  + echo == worker ==
+18:58:08  + flake8 --max-line-length=120 app-src/docker/worker/worker.py
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Tests)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+18:58:09  == backend tests ==
+18:58:09  + pip install --quiet -r requirements-test.txt
+18:58:19  + python -m pytest --junitxml=reports/junit.xml
+18:58:19  ============================= test session starts ==============================
+18:58:19  test_app.py .                                                            [100%]
+18:58:19  ============================== 1 passed in 0.29s ===============================
+18:58:19  == worker tests ==
+18:58:19  + pip install --quiet -r requirements-test.txt
+18:58:31  + python -m pytest --junitxml=reports/junit.xml
+18:58:32  ============================= test session starts ==============================
+18:58:32  test_worker.py .                                                         [100%]
+18:58:32  ============================== 1 passed in 0.79s ===============================
+[Pipeline] }
+[Pipeline] // container
+Post stage
+[Pipeline] junit
+18:58:32  Recording test results
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Build, Tag & Push (Kaniko))
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+18:58:34  + /kaniko/executor --context=dir:///home/jenkins/agent/workspace/application-ci/app-src/docker/backend --dockerfile=Dockerfile --destination=938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-backend:bfc433f10ad2-14 --digest-file=.../backend-digest.txt --cache=false --cleanup
+18:59:06  INFO Pushed 938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-backend@sha256:041418c7cebbcd1c73a0fda4768de61755179b962289f64a5d9a09e6d3e97441
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+18:59:07  + /kaniko/executor --context=dir:///home/jenkins/agent/workspace/application-ci/app-src/docker/worker --dockerfile=Dockerfile --destination=938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-worker:bfc433f10ad2-14 --digest-file=.../worker-digest.txt --cache=false --cleanup
+19:00:02  INFO Pushed 938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-worker@sha256:2d79d3fb692b4ed5e10ac75721e8e17147c3a99bffecf5d1821a352b3aba52a3
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Image Scan Results)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:00:03  + pip install --quiet awscli
+19:00:18  Waiting briefly for ECR scan-on-push (best-effort, non-blocking)...
+19:00:18  + sleep 20
+19:00:40  == devops-app-backend:bfc433f10ad2-14 ==
+19:00:40  + aws ecr describe-image-scan-findings --repository-name devops-app-backend --image-id imageTag=bfc433f10ad2-14 --region us-east-1 --query imageScanStatus --output json
+19:00:40  { "status": "IN_PROGRESS" }
+19:00:40  == devops-app-worker:bfc433f10ad2-14 ==
+19:00:40  + aws ecr describe-image-scan-findings --repository-name devops-app-worker --image-id imageTag=bfc433f10ad2-14 --region us-east-1 --query imageScanStatus --output json
+19:00:42  { "status": "IN_PROGRESS" }
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Publish Metadata)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:00:44  + cat image-metadata.json
+19:00:44  {
+19:00:44    "git_commit": "bfc433f10ad2",
+19:00:44    "build_number": "14",
+19:00:44    "image_tag": "bfc433f10ad2-14",
+19:00:44    "backend_image": "938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-backend:bfc433f10ad2-14",
+19:00:44    "backend_digest": "sha256:041418c7cebbcd1c73a0fda4768de61755179b962289f64a5d9a09e6d3e97441",
+19:00:44    "worker_image": "938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-worker:bfc433f10ad2-14",
+19:00:44    "worker_digest": "sha256:2d79d3fb692b4ed5e10ac75721e8e17147c3a99bffecf5d1821a352b3aba52a3"
+19:00:44  }
+[Pipeline] archiveArtifacts
+19:00:44  Archiving artifacts
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Declarative: Post Actions)
+[Pipeline] cleanWs
+19:00:45  [WS-CLEANUP] done
+[Pipeline] script
+[Pipeline] {
+[Pipeline] build (Scheduling application-cd)
+19:00:45  Scheduling project: application-cd
+[Pipeline] }
+[Pipeline] echo
+19:00:45  CI succeeded: 938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-backend:bfc433f10ad2-14 and 938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-worker:bfc433f10ad2-14 pushed. Triggered application-cd.
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+Finished: SUCCESS

@@ -1,0 +1,172 @@
+Evidence: application-cd build — full console output
+Captured live during this project's implementation session, auto-triggered by
+application-ci build #14 (traceability: TRIGGERED_BY_BUILD annotation below).
+Demonstrates: fresh cd-agent pod provisioning, RBAC sanity check (kubectl auth
+can-i, scoped to devops-app only), ECR pull-secret refresh, deploy-by-digest
+(not tag), rollout wait, digest verification, and a live smoke test hitting
+both services' health endpoints.
+================================================================================
+
+Started by upstream project "application-ci" build number 14
+Obtained pipelines/Jenkinsfile-cd from git https://github.com/BarBalilos/AWS-DevOps-Jenkins-CICD.git
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Agent cd-agent-741b8 is provisioned from template cd-agent
+Running on cd-agent-741b8 in /home/jenkins/agent/workspace/application-cd
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Declarative: Checkout SCM)
+Cloning repository https://github.com/BarBalilos/AWS-DevOps-Jenkins-CICD.git
+Checking out Revision 72119d85f8caed4fc6c1708d4cf130f46fda57eb (refs/remotes/origin/main)
+Commit message: "Prevent ECR token from leaking into Jenkins console log"
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Checkout)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:01:13  + apk add --no-cache git
+19:01:15  OK: 104 MiB in 62 packages
+[Pipeline] git
+19:01:15  Cloning repository https://github.com/BarBalilos/AWS-DevOps-Kubernetes.git
+19:01:16  Checking out Revision bfc433f10ad2e5a499097268f17914dfd4586ff6 (refs/remotes/origin/main)
+19:01:16  Commit message: "Ensure exactly one trailing newline (flake8 W292)"
+[Pipeline] echo
+19:01:16  Checked out app-src @ branch main (manifests only — no build happens here).
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Input Validation)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:01:17  + kubectl get namespace devops-app
+19:01:17  Input validation OK.
+19:01:17    IMAGE_TAG:           bfc433f10ad2-14
+19:01:17    BACKEND_DIGEST:      sha256:041418c7cebbcd1c73a0fda4768de61755179b962289f64a5d9a09e6d3e97441
+19:01:17    WORKER_DIGEST:       sha256:2d79d3fb692b4ed5e10ac75721e8e17147c3a99bffecf5d1821a352b3aba52a3
+19:01:17    NAMESPACE:           devops-app
+19:01:17    TRIGGERED_BY_BUILD:  application-ci #14 (http://jenkins:8080/job/application-ci/14/)
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Manifest Discovery & Validation)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:01:19  Manifests to apply (namespace/secret files excluded by design):
+19:01:19  app-src/k8s/01-configmap.yaml ... 13-networkpolicy.yaml (12 files)
+19:01:19  -- Dry-run (client) validation -- all "configured (dry run)"
+19:01:24  -- Dry-run (server) validation -- all "unchanged (server dry run)" except
+19:01:26  deployment.apps/backend configured (server dry run)
+19:01:27  deployment.apps/worker configured (server dry run)
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Authenticate / RBAC Sanity Check)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:01:33  Running as ServiceAccount: system:serviceaccount:jenkins:jenkins-cd-agent (in-cluster auth)
+19:01:33  + kubectl auth can-i patch deployments -n devops-app
+19:01:33  yes
+19:01:33  + kubectl auth can-i create pods --subresource=exec -n devops-app
+19:01:33  yes
+19:01:33  RBAC sanity checks passed.
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Refresh ECR Pull Secret)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:01:34  + set +x
+[** ECR login token retrieval intentionally masked from console output via set +x/set -x **]
+19:01:38  secret/ecr-pull-secret configured
+19:01:38  serviceaccount/backend-sa patched (no change)
+19:01:38  serviceaccount/worker-sa patched (no change)
+19:01:38  ECR pull secret refreshed and linked to backend-sa/worker-sa.
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Deploy)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:01:39  ... all manifests applied (unchanged/configured as expected) ...
+19:01:46  Pinning backend to digest sha256:041418c7cebbcd1c73a0fda4768de61755179b962289f64a5d9a09e6d3e97441...
+19:01:47  + kubectl set image deployment/backend backend=...@sha256:041418c7... -n devops-app
+19:01:47  deployment.apps/backend image updated
+19:01:47  Pinning worker to digest sha256:2d79d3fb692b4ed5e10ac75721e8e17147c3a99bffecf5d1821a352b3aba52a3...
+19:01:47  deployment.apps/worker image updated
+19:01:47  deployment.apps/backend annotated (deployed-image-tag, deployed-by-build)
+19:01:47  deployment.apps/worker annotated (deployed-image-tag, deployed-by-build)
+19:01:47  deployment.apps/backend restarted
+19:01:48  deployment.apps/worker restarted
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Rollout)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:01:48  + kubectl rollout status deployment/backend -n devops-app --timeout=180s
+19:02:07  deployment "backend" successfully rolled out
+19:02:07  + kubectl rollout status deployment/worker -n devops-app --timeout=180s
+19:02:15  deployment "worker" successfully rolled out
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Verify)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:02:16  backend running image: 938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-backend@sha256:041418c7cebbcd1c73a0fda4768de61755179b962289f64a5d9a09e6d3e97441
+19:02:17  worker running image:  938834037970.dkr.ecr.us-east-1.amazonaws.com/devops-app-worker@sha256:2d79d3fb692b4ed5e10ac75721e8e17147c3a99bffecf5d1821a352b3aba52a3
+19:02:17  Verified: running images match the requested digests.
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Smoke Test)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:02:18  Smoke-testing backend pod backend-58cd9ff684-v9qmb at /api/health ...
+19:02:18  + kubectl exec -n devops-app backend-58cd9ff684-v9qmb -- python3 -c "..."
+19:02:18  200
+19:02:18  Smoke-testing worker pod worker-5d6c55cb8-p4nt4 at /health ...
+19:02:19  + kubectl exec -n devops-app worker-5d6c55cb8-p4nt4 -- python3 -c "..."
+19:02:19  200
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Declarative: Post Actions)
+[Pipeline] cleanWs
+19:02:20  [WS-CLEANUP] done
+[Pipeline] echo
+19:02:20  CD succeeded: backend@sha256:041418c7cebbcd1c73a0fda4768de61755179b962289f64a5d9a09e6d3e97441 and worker@sha256:2d79d3fb692b4ed5e10ac75721e8e17147c3a99bffecf5d1821a352b3aba52a3 deployed to devops-app, triggered by application-ci #14 (http://jenkins:8080/job/application-ci/14/).
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+Finished: SUCCESS

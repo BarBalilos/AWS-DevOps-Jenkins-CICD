@@ -20,7 +20,8 @@
         "ecr:GetDownloadUrlForLayer",
         "ecr:DescribeRepositories",
         "ecr:DescribeImages",
-        "ecr:ListImages"
+        "ecr:ListImages",
+        "ecr:DescribeImageScanFindings"
       ],
       "Resource": [
         "arn:aws:ecr:us-east-1:938834037970:repository/devops-app-backend",

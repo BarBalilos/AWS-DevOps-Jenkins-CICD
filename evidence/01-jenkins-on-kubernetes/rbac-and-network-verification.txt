@@ -1,0 +1,52 @@
+Evidence: RBAC scoping, agent pod hardening, and NetworkPolicy enforcement
+Captured live during this project's implementation session.
+================================================================================
+
+1) CI ServiceAccount has zero Kubernetes RBAC bindings anywhere in the cluster
+   (structurally cannot deploy, even if a build step tried):
+
+$ kubectl get serviceaccount jenkins-ci-agent -n jenkins -o jsonpath='{.automountServiceAccountToken}'
+false
+
+$ kubectl get rolebinding,clusterrolebinding -A -o json | jq -r '.items[] | select(.subjects[]? .name=="jenkins-ci-agent") | .metadata.name'
+(no output — zero bindings found for jenkins-ci-agent, anywhere)
+
+2) CD ServiceAccount RBAC is scoped exactly to what the pipeline needs, nothing more:
+
+$ kubectl auth can-i patch deployments -n devops-app --as=system:serviceaccount:jenkins:jenkins-cd-agent
+yes
+
+$ kubectl auth can-i create pods --subresource=exec -n devops-app --as=system:serviceaccount:jenkins:jenkins-cd-agent
+yes
+
+3) Agent pod containers run with allowPrivilegeEscalation:false and RuntimeDefault seccomp
+   (verified on live, freshly-provisioned pods, not just the JCasC source):
+
+$ kubectl get pod ci-agent-r18pm -n jenkins -o jsonpath='{.spec.containers[?(@.name=="python")].securityContext}{"\n"}{.spec.containers[?(@.name=="kaniko-backend")].securityContext}{"\n"}{.spec.containers[?(@.name=="kaniko-worker")].securityContext}'
+{"allowPrivilegeEscalation":false,"seccompProfile":{"type":"RuntimeDefault"}}
+{"allowPrivilegeEscalation":false,"seccompProfile":{"type":"RuntimeDefault"}}
+{"allowPrivilegeEscalation":false,"seccompProfile":{"type":"RuntimeDefault"}}
+
+$ kubectl get pod cd-agent-mcm0r -n jenkins -o jsonpath='{.spec.containers[?(@.name=="kubectl")].securityContext}'
+{"allowPrivilegeEscalation":false,"seccompProfile":{"type":"RuntimeDefault"}}
+
+4) NetworkPolicy enforcement is genuinely active in this cluster (not just accepted by
+   the API) — live functional test against the devops-app namespace's existing policies:
+
+$ kubectl run netpol-test --rm -it --image=curlimages/curl --restart=Never -n default -- \
+    curl -m 5 http://backend-service.devops-app.svc.cluster.local:5000/api/health
+curl: (7) Failed to connect to backend-service.devops-app.svc.cluster.local port 5000 after 2 ms: Could not connect to server
+(pod run from OUTSIDE devops-app — correctly denied by default-deny-ingress)
+
+$ kubectl exec -n devops-app deploy/frontend -- wget -qO- --timeout=5 http://backend-service.devops-app.svc.cluster.local:5000/api/health
+{"status":"ok"}
+(same target, from the frontend pod — correctly allowed by allow-backend-from-frontend)
+
+Identical target, opposite outcome based solely on which pod issued the request —
+this is only possible if NetworkPolicy is actively enforced by the CNI, not just
+stored inertly by the API server. With this confirmed, the same protection was
+added to the jenkins namespace (network/jenkins-networkpolicy.yaml, applied by
+scripts/configure-jenkins.sh) and verified not to break agent connectivity by
+running a full pipeline build immediately afterward — see evidence/02-pipeline-ci
+and evidence/03-pipeline-cd, both of which used freshly-provisioned agent pods
+that had to establish their JNLP connection under the new policy from scratch.

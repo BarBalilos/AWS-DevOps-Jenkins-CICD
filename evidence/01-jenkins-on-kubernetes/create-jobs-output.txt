@@ -1,0 +1,24 @@
+==> Reading Jenkins admin credentials from the controller pod...
+==> Fetching CSRF crumb...
+==> Checking whether job 'application-ci' exists...
+==> Job 'application-ci' exists — updating config...
+==> Updated 'application-ci'.
+==> Checking whether job 'application-cd' exists...
+==> Job 'application-cd' exists — updating config...
+==> Updated 'application-cd'.
+==> Done. Current job list:
+{
+  "_class": "hudson.model.Hudson",
+  "jobs": [
+    {
+      "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+      "name": "application-cd",
+      "url": "http://jenkins:8080/job/application-cd/"
+    },
+    {
+      "_class": "org.jenkinsci.plugins.workflow.job.WorkflowJob",
+      "name": "application-ci",
+      "url": "http://jenkins:8080/job/application-ci/"
+    }
+  ]
+}

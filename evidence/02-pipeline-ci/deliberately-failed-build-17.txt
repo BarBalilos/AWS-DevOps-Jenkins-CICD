@@ -1,0 +1,127 @@
+Evidence: application-ci build #17 — deliberately failed run, CD not triggered
+Captured live during this project's implementation session.
+
+Setup: a trivial, guaranteed lint violation (trailing whitespace on line 1 of
+docker/worker/worker.py, flagged by flake8 as W293) was committed and pushed
+to AWS-DevOps-Kubernetes on purpose (commit a261e3d, "Intentional lint failure
+for CI evidence capture (trailing whitespace) — will be reverted immediately"),
+then application-ci was triggered manually.
+
+Demonstrates: the Lint / Static Analysis stage fails the build; every
+subsequent stage (Tests, Build/Push, Image Scan, Publish Metadata) is
+automatically skipped ("skipped due to earlier failure(s)"); the pipeline's
+own post-action logic explicitly recognizes the failure and states that
+application-cd will NOT be triggered; the build ends Finished: FAILURE.
+The intentional change was reverted immediately after this run (see the
+follow-up commit in AWS-DevOps-Kubernetes).
+================================================================================
+
+Started by an SCM change
+Obtained pipelines/Jenkinsfile-ci from git https://github.com/BarBalilos/AWS-DevOps-Jenkins-CICD.git
+[Pipeline] Start of Pipeline
+[Pipeline] node
+Agent ci-agent-tspm9 is provisioned from template ci-agent
+Running on ci-agent-tspm9 in /home/jenkins/agent/workspace/application-ci
+[Pipeline] {
+[Pipeline] stage
+[Pipeline] { (Declarative: Checkout SCM)
+Cloning repository https://github.com/BarBalilos/AWS-DevOps-Jenkins-CICD.git
+Checking out Revision 72119d85f8caed4fc6c1708d4cf130f46fda57eb (refs/remotes/origin/main)
+Commit message: "Prevent ECR token from leaking into Jenkins console log"
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Checkout)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:57:59  + apt-get update -qq
+19:58:08  + apt-get install -y -qq git
+[Pipeline] git
+19:58:47  Cloning repository https://github.com/BarBalilos/AWS-DevOps-Kubernetes.git
+19:58:48  Checking out Revision a261e3db4b01bdcf728aaa99790201e197f5aad7 (refs/remotes/origin/main)
+19:58:48  Commit message: "Intentional lint failure for CI evidence capture (trailing whitespace) — will be reverted immediately"
+[Pipeline] echo
+19:58:49  app-src @ a261e3db4b01 (Jenkins build #17) -> image tag a261e3db4b01-17
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Validation)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:58:50  Validation OK: Dockerfile + requirements(+test) present for backend and worker.
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Lint / Static Analysis)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:58:50  + set -eu
+19:58:50  + pip install --quiet flake8==7.1.1
+19:58:57  + echo == backend ==
+19:58:57  == backend ==
+19:58:57  + flake8 --max-line-length=120 app-src/docker/backend/app.py
+19:58:57  + echo == worker ==
+19:58:57  == worker ==
+19:58:57  + flake8 --max-line-length=120 app-src/docker/worker/worker.py
+19:58:58  app-src/docker/worker/worker.py:2:1: W293 blank line contains whitespace
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Tests)
+Stage "Tests" skipped due to earlier failure(s)
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Build, Tag & Push (Kaniko))
+Stage "Build, Tag & Push (Kaniko)" skipped due to earlier failure(s)
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Image Scan Results)
+Stage "Image Scan Results" skipped due to earlier failure(s)
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Publish Metadata)
+Stage "Publish Metadata" skipped due to earlier failure(s)
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] stage
+[Pipeline] { (Declarative: Post Actions)
+[Pipeline] container
+[Pipeline] {
+[Pipeline] sh
+19:58:59  + rm -f backend-digest.txt worker-digest.txt
+[Pipeline] }
+[Pipeline] // container
+[Pipeline] cleanWs
+19:58:59  [WS-CLEANUP] Deleting project workspace...
+19:58:59  [WS-CLEANUP] done
+[Pipeline] echo
+19:58:59  CI failed — no image was fully published; application-cd will NOT be triggered.
+[Pipeline] }
+[Pipeline] // stage
+[Pipeline] }
+[Pipeline] // timeout
+[Pipeline] }
+[Pipeline] // timestamps
+[Pipeline] }
+[Pipeline] // withEnv
+[Pipeline] }
+[Pipeline] // withEnv
+[Pipeline] }
+[Pipeline] // node
+[Pipeline] End of Pipeline
+ERROR: script returned exit code 1
+Finished: FAILURE
+=== application-cd build history after the failed CI run — confirms no new build was triggered ===
+{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowJob","builds":[{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":11,"result":"SUCCESS"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":10,"result":"SUCCESS"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":9,"result":"SUCCESS"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":8,"result":"SUCCESS"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":7,"result":"SUCCESS"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":6,"result":"SUCCESS"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":5,"result":"FAILURE"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":4,"result":"FAILURE"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":3,"result":"FAILURE"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":2,"result":"FAILURE"},{"_class":"org.jenkinsci.plugins.workflow.job.WorkflowRun","number":1,"result":"FAILURE"}]}

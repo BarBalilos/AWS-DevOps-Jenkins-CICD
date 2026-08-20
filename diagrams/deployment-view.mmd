@@ -1,0 +1,53 @@
+flowchart TB
+    subgraph DEV["Developer Workstation (WSL2 / Docker Desktop)"]
+        Kubectl["kubectl (kubeconfig -&gt; k3d cluster)"]
+        PortFwd["kubectl port-forward -&gt; localhost:8081<br/>(Jenkins UI never exposed via Ingress/LB)"]
+    end
+
+    subgraph GH["GitHub"]
+        RepoCICD["AWS-DevOps-Jenkins-CICD<br/>(Jenkinsfiles, RBAC, IAM policy, JCasC)"]
+        RepoApp["AWS-DevOps-Kubernetes<br/>(app source, Dockerfiles, k8s manifests)"]
+    end
+
+    subgraph AWS["AWS Account 938834037970"]
+        IAM["IAM user: jenkins-ci-ecr<br/>(scoped: ECR push/pull + scan-read only,<br/>NOT the broad BarBalilos account user)"]
+        ECR1["ECR: devops-app-backend"]
+        ECR2["ECR: devops-app-worker"]
+    end
+
+    subgraph K3D["k3d cluster: devops-k8s"]
+        subgraph NSJ["Namespace: jenkins"]
+            Controller["jenkins-0 (StatefulSet)<br/>controller + config-reload sidecar<br/>ClusterIP :8080 / :50000, no Ingress"]
+            CIAgent["ci-agent-* (ephemeral pod)<br/>containers: python, kaniko-backend,<br/>kaniko-worker, jnlp<br/>SA: jenkins-ci-agent<br/>no RBAC bindings, automountServiceAccountToken: false"]
+            CDAgent["cd-agent-* (ephemeral pod)<br/>containers: kubectl, jnlp<br/>SA: jenkins-cd-agent<br/>scoped Role, devops-app namespace only"]
+            SecretJ["Secret: jenkins-ecr-credentials<br/>(AWS keys for jenkins-ci-ecr)"]
+            NPJ["NetworkPolicy:<br/>jenkins-default-deny-ingress +<br/>jenkins-allow-agents-to-controller<br/>(8080/50000, jenkins ns only)"]
+        end
+
+        subgraph NSA["Namespace: devops-app"]
+            Frontend["frontend (nginx-unprivileged)"]
+            Backend["backend (Flask)<br/>deployed by image DIGEST, not tag"]
+            Worker["worker (Python)<br/>deployed by image DIGEST, not tag"]
+            Postgres["postgres"]
+            SAs["ServiceAccounts:<br/>backend-sa, worker-sa,<br/>frontend-sa, postgres-sa"]
+            NPA["NetworkPolicies:<br/>default-deny-ingress,<br/>allow-frontend-ingress,<br/>allow-backend-from-frontend,<br/>allow-worker-from-frontend,<br/>allow-postgres-from-backend"]
+            Ingress["Ingress: frontend-ingress (traefik)"]
+        end
+    end
+
+    RepoCICD -- "SCM poll H/5 * * * *" --> Controller
+    Controller -- provisions --> CIAgent
+    Controller -- provisions --> CDAgent
+    CIAgent -- "checkout app-src" --> RepoApp
+    CIAgent -- "kaniko build + push" --> ECR1
+    CIAgent -- "kaniko build + push" --> ECR2
+    CIAgent -. "reads AWS creds" .-> SecretJ
+    CDAgent -. "reads AWS creds" .-> SecretJ
+    CIAgent -. authenticates as .-> IAM
+    CDAgent -- "apply / set image / rollout restart" --> Backend
+    CDAgent -- "apply / set image / rollout restart" --> Worker
+    Backend -- "pulls image by digest" --> ECR1
+    Worker -- "pulls image by digest" --> ECR2
+    Frontend --> Ingress
+    Kubectl --> Controller
+    PortFwd --> Controller

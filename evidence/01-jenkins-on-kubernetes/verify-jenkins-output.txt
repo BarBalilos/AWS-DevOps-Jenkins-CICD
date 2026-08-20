@@ -1,0 +1,39 @@
+== Namespaces ==
+NAME              STATUS   AGE
+default           Active   5d1h
+devops-app        Active   5d1h
+jenkins           Active   45h
+kube-node-lease   Active   5d1h
+kube-public       Active   5d1h
+kube-system       Active   5d1h
+== Pods ==
+NAME        READY   STATUS    RESTARTS   AGE   IP           NODE                      NOMINATED NODE   READINESS GATES
+jenkins-0   2/2     Running   0          88m   10.42.1.71   k3d-devops-k8s-server-0   <none>           <none>
+== Service / Ingress / PVC ==
+NAME                    TYPE        CLUSTER-IP     EXTERNAL-IP   PORT(S)     AGE
+service/jenkins         ClusterIP   10.43.227.74   <none>        8080/TCP    29h
+service/jenkins-agent   ClusterIP   10.43.77.9     <none>        50000/TCP   29h
+
+NAME                            STATUS   VOLUME                                     CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+persistentvolumeclaim/jenkins   Bound    pvc-c9803e4a-eec2-433a-ab56-2cbd9d727dce   8Gi        RWO            local-path     <unset>                 29h
+== ServiceAccount / Role / RoleBinding ==
+NAME                              AGE
+serviceaccount/default            45h
+serviceaccount/jenkins            29h
+serviceaccount/jenkins-cd-agent   29h
+serviceaccount/jenkins-ci-agent   29h
+
+NAME                                                     CREATED AT
+role.rbac.authorization.k8s.io/jenkins-casc-reload       2026-08-19T11:05:50Z
+role.rbac.authorization.k8s.io/jenkins-schedule-agents   2026-08-19T11:05:50Z
+
+NAME                                                             ROLE                           AGE
+rolebinding.rbac.authorization.k8s.io/jenkins-schedule-agents    Role/jenkins-schedule-agents   29h
+rolebinding.rbac.authorization.k8s.io/jenkins-watch-configmaps   Role/jenkins-casc-reload       29h
+== Helm release ==
+NAME   	NAMESPACE	REVISION	UPDATED                                	STATUS  	CHART         	APP VERSION
+jenkins	jenkins  	18      	2026-08-20 19:36:43.597259626 +0300 IDT	deployed	jenkins-5.9.54	2.568.2    
+== Waiting for controller readiness ==
+pod/jenkins-0 condition met
+>> Jenkins controller is Ready.
+jenkins config-reload
