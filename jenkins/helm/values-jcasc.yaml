@@ -119,3 +119,7 @@ controller:
                           - secretEnvVar: {key: "AWS_ACCESS_KEY_ID", secretName: "jenkins-ecr-credentials", secretKey: "aws-access-key-id"}
                           - secretEnvVar: {key: "AWS_SECRET_ACCESS_KEY", secretName: "jenkins-ecr-credentials", secretKey: "aws-secret-access-key"}
                           - envVar: {key: "AWS_DEFAULT_REGION", value: "us-east-1"}
+      prometheus-metrics: |
+        unclassified:
+          prometheusConfiguration:
+            useAuthenticatedEndpoint: false

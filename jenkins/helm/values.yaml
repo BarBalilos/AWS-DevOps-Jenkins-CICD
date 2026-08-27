@@ -73,6 +73,7 @@ controller:
     - timestamper
     - ws-cleanup
     - junit
+    - prometheus
 
   # No public exposure — internal ClusterIP only, reached via
   # kubectl port-forward until we make a deliberate Ingress decision.

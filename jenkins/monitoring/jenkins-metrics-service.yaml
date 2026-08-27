@@ -1,0 +1,17 @@
+apiVersion: v1
+kind: Service
+metadata:
+  name: jenkins-metrics
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/component: jenkins-metrics
+spec:
+  selector:
+    app.kubernetes.io/name: jenkins
+    app.kubernetes.io/instance: jenkins
+    app.kubernetes.io/component: jenkins-controller
+  ports:
+    - name: metrics
+      port: 8080
+      targetPort: 8080

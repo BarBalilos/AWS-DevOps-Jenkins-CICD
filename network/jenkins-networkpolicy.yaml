@@ -33,3 +33,25 @@ spec:
           port: 8080
         - protocol: TCP
           port: 50000
+---
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: jenkins-allow-metrics-from-observability
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/part-of: jenkins-cicd
+spec:
+  podSelector:
+    matchLabels:
+      app.kubernetes.io/component: jenkins-controller
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              purpose: monitoring
+      ports:
+        - protocol: TCP
+          port: 8080
