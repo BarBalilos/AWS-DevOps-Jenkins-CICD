@@ -81,20 +81,28 @@ pipeline {
                     sh '''
                         set -eu
                         jq --version > /dev/null 2>&1 || apk add --no-cache jq
+                        curl --version > /dev/null 2>&1 || apk add --no-cache curl
+
+                        PROMTOOL_VERSION=2.55.1
+                        if [ ! -x ./promtool ]; then
+                            echo "Downloading promtool ${PROMTOOL_VERSION}..."
+                            curl -fsSL -o /tmp/prometheus.tar.gz \
+                              "https://github.com/prometheus/prometheus/releases/download/v${PROMTOOL_VERSION}/prometheus-${PROMTOOL_VERSION}.linux-amd64.tar.gz"
+                            tar -xzf /tmp/prometheus.tar.gz -C /tmp
+                            cp "/tmp/prometheus-${PROMTOOL_VERSION}.linux-amd64/promtool" ./promtool
+                            chmod +x ./promtool
+                        fi
+
                         mkdir -p rules-plain
                         while IFS= read -r f; do
                             name=$(basename "$f" .yaml)
                             echo "-- extracting spec: $f --"
                             kubectl apply --dry-run=client -f "$f" -o json | jq '.spec' > "rules-plain/${name}.json"
                         done < rule-files.txt
-                    '''
-                }
-                container('promtool') {
-                    sh '''
-                        set -eu
+
                         for f in rules-plain/*.json; do
                             echo "-- promtool check rules: $f --"
-                            promtool check rules "$f"
+                            ./promtool check rules "$f"
                         done
                     '''
                 }

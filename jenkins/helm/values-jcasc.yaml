@@ -134,35 +134,23 @@ controller:
                               allowPrivilegeEscalation: false
                               seccompProfile:
                                 type: RuntimeDefault
-                          - name: promtool
-                            securityContext:
-                              allowPrivilegeEscalation: false
-                              seccompProfile:
-                                type: RuntimeDefault
                     containers:
                       # Validates ServiceMonitor/PodMonitor/PrometheusRule manifests via
-                      # `kubectl apply --dry-run=server`, and extracts PrometheusRule .spec
-                      # (via jq) for promtool to check. No AWS credentials — this agent
-                      # never touches ECR.
+                      # `kubectl apply --dry-run=server`, extracts PrometheusRule .spec
+                      # (via jq) for promtool to check, and downloads promtool itself
+                      # (a static binary from the official GitHub release) rather than
+                      # using a separate prom/prometheus container — its minimal busybox
+                      # base doesn't reliably expose the shell Jenkins's durable-task
+                      # launcher needs. No AWS credentials — this agent never touches ECR.
                       - name: "kubectl"
                         image: "alpine/k8s:1.31.2"
                         command: "sleep"
                         args: "9999999"
                         workingDir: "/home/jenkins/agent"
-                        resourceRequestCpu: "100m"
-                        resourceRequestMemory: "128Mi"
-                        resourceLimitCpu: "300m"
-                        resourceLimitMemory: "256Mi"
-                      # Checks PrometheusRule PromQL syntax/well-formedness.
-                      - name: "promtool"
-                        image: "prom/prometheus:v2.55.1"
-                        command: "sleep"
-                        args: "9999999"
-                        workingDir: "/home/jenkins/agent"
-                        resourceRequestCpu: "100m"
-                        resourceRequestMemory: "128Mi"
-                        resourceLimitCpu: "300m"
-                        resourceLimitMemory: "256Mi"
+                        resourceRequestCpu: "150m"
+                        resourceRequestMemory: "192Mi"
+                        resourceLimitCpu: "400m"
+                        resourceLimitMemory: "384Mi"
       prometheus-metrics: |
         unclassified:
           prometheusConfiguration:
