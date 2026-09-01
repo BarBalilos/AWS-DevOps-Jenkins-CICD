@@ -47,6 +47,7 @@ create_or_update_job() {
 
 create_or_update_job "application-ci" "jobs/application-ci-config.xml"
 create_or_update_job "application-cd" "jobs/application-cd-config.xml"
+create_or_update_job "observability-ci" "jobs/observability-ci-config.xml"
 
 echo "==> Done. Current job list:"
 curl -g -s -c "$COOKIE_JAR" -b "$COOKIE_JAR" -u "${JENKINS_USER}:${JENKINS_PASS}" \

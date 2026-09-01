@@ -1,0 +1,95 @@
+# ServiceAccount used by the observability-ci-agent Jenkins pod template.
+# Unlike jenkins-ci-agent (which never talks to the Kubernetes API at all),
+# this agent DOES need API access — it runs `kubectl apply --dry-run=server`
+# against PrometheusRule/ServiceMonitor/PodMonitor manifests to validate them
+# against the live CRD schema and any admission webhooks. It never creates,
+# updates, or deletes anything for real: every kubectl call here is
+# --dry-run=server or --dry-run=client. RBAC below grants only the verbs a
+# dry-run apply needs — the API server still checks RBAC before short-
+# circuiting the write on a dry run, so "create"/"patch" must be granted
+# even though nothing is ever actually persisted.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: jenkins-observability-ci-agent
+  namespace: jenkins
+  labels:
+    app.kubernetes.io/part-of: jenkins-cicd
+---
+# Validates PrometheusRule manifests (prometheus/rules/*.yaml) against the
+# monitoring.coreos.com CRD schema in the observability namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-observability-ci-rule-validator
+  namespace: observability
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["prometheusrules"]
+    verbs: ["get", "list", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-observability-ci-rule-validator-binding
+  namespace: observability
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-observability-ci-agent
+    namespace: jenkins
+roleRef:
+  kind: Role
+  name: jenkins-observability-ci-rule-validator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Validates PodMonitor manifests (prometheus/monitors/backend-podmonitor.yaml,
+# frontend-podmonitor.yaml, worker-podmonitor.yaml) in devops-app.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-observability-ci-podmonitor-validator
+  namespace: devops-app
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["podmonitors"]
+    verbs: ["get", "list", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-observability-ci-podmonitor-validator-binding
+  namespace: devops-app
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-observability-ci-agent
+    namespace: jenkins
+roleRef:
+  kind: Role
+  name: jenkins-observability-ci-podmonitor-validator
+  apiGroup: rbac.authorization.k8s.io
+---
+# Validates the Jenkins ServiceMonitor manifest
+# (prometheus/monitors/jenkins-servicemonitor.yaml) in the jenkins namespace.
+apiVersion: rbac.authorization.k8s.io/v1
+kind: Role
+metadata:
+  name: jenkins-observability-ci-servicemonitor-validator
+  namespace: jenkins
+rules:
+  - apiGroups: ["monitoring.coreos.com"]
+    resources: ["servicemonitors"]
+    verbs: ["get", "list", "create", "patch"]
+---
+apiVersion: rbac.authorization.k8s.io/v1
+kind: RoleBinding
+metadata:
+  name: jenkins-observability-ci-servicemonitor-validator-binding
+  namespace: jenkins
+subjects:
+  - kind: ServiceAccount
+    name: jenkins-observability-ci-agent
+    namespace: jenkins
+roleRef:
+  kind: Role
+  name: jenkins-observability-ci-servicemonitor-validator
+  apiGroup: rbac.authorization.k8s.io

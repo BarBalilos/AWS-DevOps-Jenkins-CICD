@@ -119,7 +119,50 @@ controller:
                           - secretEnvVar: {key: "AWS_ACCESS_KEY_ID", secretName: "jenkins-ecr-credentials", secretKey: "aws-access-key-id"}
                           - secretEnvVar: {key: "AWS_SECRET_ACCESS_KEY", secretName: "jenkins-ecr-credentials", secretKey: "aws-secret-access-key"}
                           - envVar: {key: "AWS_DEFAULT_REGION", value: "us-east-1"}
+                  - name: "observability-ci-agent"
+                    label: "observability-ci-agent"
+                    namespace: "jenkins"
+                    serviceAccount: "jenkins-observability-ci-agent"
+                    idleMinutes: 5
+                    podRetention: "never"
+                    yamlMergeStrategy: "merge"
+                    yaml: |
+                      spec:
+                        containers:
+                          - name: kubectl
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              seccompProfile:
+                                type: RuntimeDefault
+                          - name: promtool
+                            securityContext:
+                              allowPrivilegeEscalation: false
+                              seccompProfile:
+                                type: RuntimeDefault
+                    containers:
+                      # Validates ServiceMonitor/PodMonitor/PrometheusRule manifests via
+                      # `kubectl apply --dry-run=server`, and extracts PrometheusRule .spec
+                      # (via jq) for promtool to check. No AWS credentials — this agent
+                      # never touches ECR.
+                      - name: "kubectl"
+                        image: "alpine/k8s:1.31.2"
+                        command: "sleep"
+                        args: "9999999"
+                        workingDir: "/home/jenkins/agent"
+                        resourceRequestCpu: "100m"
+                        resourceRequestMemory: "128Mi"
+                        resourceLimitCpu: "300m"
+                        resourceLimitMemory: "256Mi"
+                      # Checks PrometheusRule PromQL syntax/well-formedness.
+                      - name: "promtool"
+                        image: "prom/prometheus:v2.55.1"
+                        command: "sleep"
+                        args: "9999999"
+                        workingDir: "/home/jenkins/agent"
+                        resourceRequestCpu: "100m"
+                        resourceRequestMemory: "128Mi"
+                        resourceLimitCpu: "300m"
+                        resourceLimitMemory: "256Mi"
       prometheus-metrics: |
         unclassified:
           prometheusConfiguration:
-            useAuthenticatedEndpoint: false

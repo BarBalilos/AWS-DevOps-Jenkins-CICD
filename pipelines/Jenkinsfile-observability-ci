@@ -1,0 +1,134 @@
+// pipelines/Jenkinsfile-observability-ci
+//
+// CI validation pipeline for the AWS-DevOps-Observability repo. Source of
+// truth for the files it checks: AWS-DevOps-Observability (checked out into
+// obs-src/ below — this pipeline's own repo is never itself checked out for
+// content, only for this Jenkinsfile).
+//
+// Responsibility boundary: this pipeline NEVER deploys or applies anything
+// for real. Every kubectl call is --dry-run=server or --dry-run=client.
+// It validates PrometheusRule syntax (promtool), ServiceMonitor/PodMonitor/
+// PrometheusRule manifests against the live CRD schema (kubectl dry-run),
+// and Grafana dashboard JSON (jq). It does not trigger any other pipeline —
+// it is a pass/fail gate on the Observability repo's own content.
+pipeline {
+    agent { label 'observability-ci-agent' }
+    options {
+        timestamps()
+        timeout(time: 15, unit: 'MINUTES')
+        disableConcurrentBuilds()
+    }
+    environment {
+        OBS_REPO_URL    = "https://github.com/BarBalilos/AWS-DevOps-Observability.git"
+        OBS_REPO_BRANCH = "main"
+    }
+    stages {
+        stage('Checkout') {
+            steps {
+                container('kubectl') {
+                    sh 'git --version > /dev/null 2>&1 || apk add --no-cache git'
+                    dir('obs-src') {
+                        git branch: "${OBS_REPO_BRANCH}", url: "${OBS_REPO_URL}"
+                    }
+                    sh 'git config --global --add safe.directory "*"'
+                    script {
+                        env.GIT_COMMIT_SHORT = sh(script: 'cd obs-src && git rev-parse --short=12 HEAD', returnStdout: true).trim()
+                    }
+                    echo "obs-src @ ${env.GIT_COMMIT_SHORT} (Jenkins build #${env.BUILD_NUMBER})"
+                }
+            }
+        }
+        stage('Manifest Discovery') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        echo "-- Rule files --"
+                        find obs-src/prometheus/rules -maxdepth 1 -type f -name '*.yaml' | sort | tee rule-files.txt
+                        echo "-- Monitor files --"
+                        find obs-src/prometheus/monitors -maxdepth 1 -type f -name '*.yaml' | sort | tee monitor-files.txt
+                        echo "-- Dashboard files --"
+                        find obs-src/grafana/dashboards -maxdepth 1 -type f -name '*.json' | sort | tee dashboard-files.txt
+                        test -s rule-files.txt
+                        test -s monitor-files.txt
+                        test -s dashboard-files.txt
+                    '''
+                }
+            }
+        }
+        stage('Validate Manifests (dry-run=server)') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        echo "-- PrometheusRule files --"
+                        while IFS= read -r f; do
+                            echo "-- dry-run server: $f --"
+                            kubectl apply --dry-run=server -f "$f"
+                        done < rule-files.txt
+                        echo "-- ServiceMonitor / PodMonitor files --"
+                        while IFS= read -r f; do
+                            echo "-- dry-run server: $f --"
+                            kubectl apply --dry-run=server -f "$f"
+                        done < monitor-files.txt
+                    '''
+                }
+            }
+        }
+        stage('Validate PrometheusRule Syntax (promtool)') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        jq --version > /dev/null 2>&1 || apk add --no-cache jq
+                        mkdir -p rules-plain
+                        while IFS= read -r f; do
+                            name=$(basename "$f" .yaml)
+                            echo "-- extracting spec: $f --"
+                            kubectl apply --dry-run=client -f "$f" -o json | jq '.spec' > "rules-plain/${name}.json"
+                        done < rule-files.txt
+                    '''
+                }
+                container('promtool') {
+                    sh '''
+                        set -eu
+                        for f in rules-plain/*.json; do
+                            echo "-- promtool check rules: $f --"
+                            promtool check rules "$f"
+                        done
+                    '''
+                }
+            }
+        }
+        stage('Validate Grafana Dashboards (JSON)') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        jq --version > /dev/null 2>&1 || apk add --no-cache jq
+                        while IFS= read -r f; do
+                            echo "-- validating dashboard JSON: $f --"
+                            jq empty "$f"
+                            jq -e '.title and .panels and (.panels | length > 0)' "$f" > /dev/null
+                            echo "OK: $f is valid JSON with a title and at least one panel."
+                        done < dashboard-files.txt
+                    '''
+                }
+            }
+        }
+    }
+    post {
+        always {
+            container('kubectl') {
+                sh 'rm -f rule-files.txt monitor-files.txt dashboard-files.txt || true'
+            }
+            cleanWs(deleteDirs: true, notFailBuild: true)
+        }
+        success {
+            echo "observability-ci passed: PrometheusRule syntax, ServiceMonitor/PodMonitor/PrometheusRule schema, and Grafana dashboard JSON all validated for obs-src @ ${env.GIT_COMMIT_SHORT}."
+        }
+        failure {
+            echo "observability-ci failed — one or more PrometheusRule/ServiceMonitor/PodMonitor/dashboard files did not validate. See the failing stage above."
+        }
+    }
+}
