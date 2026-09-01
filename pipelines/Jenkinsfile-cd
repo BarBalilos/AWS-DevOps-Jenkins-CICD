@@ -16,6 +16,7 @@ pipeline {
         AWS_REGION = "us-east-1"
         APP_REPO_URL = "https://github.com/BarBalilos/AWS-DevOps-Kubernetes.git"
         APP_REPO_BRANCH = "main"
+        PROMETHEUS_URL = "http://kube-prometheus-stack-prometheus.observability.svc.cluster.local:9090"
     }
     stages {
         stage('Checkout') {
@@ -30,7 +31,6 @@ pipeline {
                 }
             }
         }
-
         stage('Input Validation') {
             steps {
                 container('kubectl') {
@@ -44,15 +44,12 @@ pipeline {
                             echo "ERROR: IMAGE_TAG must not be 'latest'." >&2
                             exit 1
                         fi
-
                         BACKEND_DIGEST=$(echo "${IMAGE_DIGEST}" | tr ',' '\n' | grep '^backend=' | cut -d'=' -f2-)
                         WORKER_DIGEST=$(echo "${IMAGE_DIGEST}" | tr ',' '\n' | grep '^worker=' | cut -d'=' -f2-)
-
                         if [ -z "${BACKEND_DIGEST}" ] || [ -z "${WORKER_DIGEST}" ]; then
                             echo "ERROR: could not parse backend/worker digests from IMAGE_DIGEST." >&2
                             exit 1
                         fi
-
                         case "${BACKEND_DIGEST}" in
                             sha256:*) ;;
                             *) echo "ERROR: BACKEND_DIGEST must start with sha256:" >&2; exit 1 ;;
@@ -61,17 +58,13 @@ pipeline {
                             sha256:*) ;;
                             *) echo "ERROR: WORKER_DIGEST must start with sha256:" >&2; exit 1 ;;
                         esac
-
                         if [ "${NAMESPACE}" != "devops-app" ]; then
                             echo "ERROR: NAMESPACE must be devops-app." >&2
                             exit 1
                         fi
-
                         kubectl get namespace "${NAMESPACE}" > /dev/null
-
                         echo "${BACKEND_DIGEST}" > backend-digest.txt
                         echo "${WORKER_DIGEST}" > worker-digest.txt
-
                         echo "Input validation OK."
                         echo "  IMAGE_TAG:           ${IMAGE_TAG}"
                         echo "  BACKEND_DIGEST:      ${BACKEND_DIGEST}"
@@ -86,7 +79,6 @@ pipeline {
                 }
             }
         }
-
         stage('Manifest Discovery & Validation') {
             steps {
                 container('kubectl') {
@@ -95,13 +87,11 @@ pipeline {
                         find app-src/k8s -maxdepth 1 -type f -name '*.yaml' ! -name '*namespace*' ! -name '*secret*' | sort > manifest-files.txt
                         echo "Manifests to apply (namespace/secret files excluded by design):"
                         cat manifest-files.txt
-
                         echo "-- Dry-run (client) validation --"
                         while IFS= read -r f; do
                             echo "-- dry-run client: ${f} --"
                             kubectl apply --dry-run=client -f "${f}"
                         done < manifest-files.txt
-
                         echo "-- Dry-run (server) validation --"
                         while IFS= read -r f; do
                             echo "-- dry-run server: ${f} --"
@@ -111,7 +101,6 @@ pipeline {
                 }
             }
         }
-
         stage('Authenticate / RBAC Sanity Check') {
             steps {
                 container('kubectl') {
@@ -125,7 +114,6 @@ pipeline {
                 }
             }
         }
-
         stage('Refresh ECR Pull Secret') {
             steps {
                 container('kubectl') {
@@ -148,7 +136,6 @@ pipeline {
                 }
             }
         }
-
         stage('Deploy') {
             steps {
                 container('kubectl') {
@@ -158,26 +145,25 @@ pipeline {
                             echo "-- apply: ${f} --"
                             kubectl apply -f "${f}"
                         done < manifest-files.txt
-
                         BACKEND_DIGEST=$(cat backend-digest.txt)
                         WORKER_DIGEST=$(cat worker-digest.txt)
-
                         echo "Pinning backend to digest ${BACKEND_DIGEST}..."
                         kubectl set image deployment/backend backend="${ECR_REGISTRY}/devops-app-backend@${BACKEND_DIGEST}" -n "${NAMESPACE}"
-
                         echo "Pinning worker to digest ${WORKER_DIGEST}..."
                         kubectl set image deployment/worker worker="${ECR_REGISTRY}/devops-app-worker@${WORKER_DIGEST}" -n "${NAMESPACE}"
-
+                        GIT_SHA_SHORT=$(echo "${IMAGE_TAG}" | cut -c1-12)
+                        RELEASE_ID="application-cd-${BUILD_NUMBER}"
+                        echo "Setting app_info env vars: APP_VERSION=${IMAGE_TAG} GIT_SHA=${GIT_SHA_SHORT} RELEASE=${RELEASE_ID}"
+                        kubectl set env deployment/backend -n "${NAMESPACE}" APP_VERSION="${IMAGE_TAG}" GIT_SHA="${GIT_SHA_SHORT}" RELEASE="${RELEASE_ID}"
+                        kubectl set env deployment/worker -n "${NAMESPACE}" APP_VERSION="${IMAGE_TAG}" GIT_SHA="${GIT_SHA_SHORT}" RELEASE="${RELEASE_ID}"
                         kubectl annotate deployment/backend -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" --overwrite
                         kubectl annotate deployment/worker -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" --overwrite
-
                         kubectl rollout restart deployment/backend -n "${NAMESPACE}"
                         kubectl rollout restart deployment/worker -n "${NAMESPACE}"
                     '''
                 }
             }
         }
-
         stage('Rollout') {
             steps {
                 container('kubectl') {
@@ -189,23 +175,18 @@ pipeline {
                 }
             }
         }
-
         stage('Verify') {
             steps {
                 container('kubectl') {
                     sh '''
                         set -eu
                         kubectl get deployments,pods,services,ingress -n "${NAMESPACE}" -o wide
-
                         BACKEND_DIGEST=$(cat backend-digest.txt)
                         WORKER_DIGEST=$(cat worker-digest.txt)
-
                         RUNNING_BACKEND=$(kubectl get deployment backend -n "${NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[0].image}')
                         RUNNING_WORKER=$(kubectl get deployment worker -n "${NAMESPACE}" -o jsonpath='{.spec.template.spec.containers[0].image}')
-
                         echo "backend running image: ${RUNNING_BACKEND}"
                         echo "worker running image:  ${RUNNING_WORKER}"
-
                         if ! echo "${RUNNING_BACKEND}" | grep -q "${BACKEND_DIGEST}"; then
                             echo "ERROR: running backend image does not match expected digest ${BACKEND_DIGEST}" >&2
                             exit 1
@@ -219,7 +200,6 @@ pipeline {
                 }
             }
         }
-
         stage('Smoke Test') {
             steps {
                 container('kubectl') {
@@ -227,18 +207,72 @@ pipeline {
                         set -eu
                         BACKEND_POD=$(kubectl get pods -n "${NAMESPACE}" -l app=backend -o jsonpath='{.items[0].metadata.name}')
                         WORKER_POD=$(kubectl get pods -n "${NAMESPACE}" -l app=worker -o jsonpath='{.items[0].metadata.name}')
-
                         echo "Smoke-testing backend pod ${BACKEND_POD} at /api/health ..."
                         kubectl exec -n "${NAMESPACE}" "${BACKEND_POD}" -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:5000/api/health', timeout=5).status)"
-
                         echo "Smoke-testing worker pod ${WORKER_POD} at /health ..."
                         kubectl exec -n "${NAMESPACE}" "${WORKER_POD}" -- python3 -c "import urllib.request; print(urllib.request.urlopen('http://localhost:5001/health', timeout=5).status)"
                     '''
                 }
             }
         }
-    }
+        stage('Monitoring Gate') {
+            steps {
+                container('kubectl') {
+                    sh '''
+                        set -eu
+                        curl --version > /dev/null 2>&1 || apk add --no-cache curl
+                        jq --version > /dev/null 2>&1 || apk add --no-cache jq
 
+                        echo "Waiting 45s for Prometheus to complete a fresh scrape cycle post-rollout..."
+                        sleep 45
+
+                        echo "-- Checking scrape targets are up --"
+                        UP_RESULT=$(curl -s -G --data-urlencode 'query=up{job=~"devops-app/backend|devops-app/worker"}' "${PROMETHEUS_URL}/api/v1/query")
+                        echo "${UP_RESULT}" | jq .
+
+                        UP_COUNT=$(echo "${UP_RESULT}" | jq '[.data.result[] | select(.value[1] == "1")] | length')
+                        TOTAL_COUNT=$(echo "${UP_RESULT}" | jq '.data.result | length')
+
+                        if [ "${TOTAL_COUNT}" -lt 2 ] || [ "${UP_COUNT}" -lt 2 ]; then
+                            echo "ERROR: expected 2 scrape targets up (devops-app/backend, devops-app/worker), found ${UP_COUNT} up out of ${TOTAL_COUNT} reporting." >&2
+                            exit 1
+                        fi
+                        echo "OK: both backend and worker scrape targets are up."
+
+                        echo "-- Checking error rate / latency SLI over the last 2 minutes --"
+                        TOTAL_REQ=$(curl -s -G --data-urlencode 'query=sum(increase(http_requests_total{job=~"devops-app/backend|devops-app/worker"}[2m]))' "${PROMETHEUS_URL}/api/v1/query" | jq -r '.data.result[0].value[1] // "0"')
+                        TOTAL_REQ_INT=$(echo "${TOTAL_REQ}" | cut -d'.' -f1)
+                        if [ -z "${TOTAL_REQ_INT}" ]; then TOTAL_REQ_INT=0; fi
+
+                        if [ "${TOTAL_REQ_INT}" -lt 1 ]; then
+                            echo "No request traffic observed in the last 2 minutes yet - skipping error rate/latency gate (nothing to evaluate)."
+                        else
+                            AVAIL_RATIO=$(curl -s -G --data-urlencode 'query=sum(rate(http_requests_total{job=~"devops-app/backend|devops-app/worker",status!~"5.."}[2m])) / sum(rate(http_requests_total{job=~"devops-app/backend|devops-app/worker"}[2m]))' "${PROMETHEUS_URL}/api/v1/query" | jq -r '.data.result[0].value[1] // "1"')
+                            LATENCY_RATIO=$(curl -s -G --data-urlencode 'query=sum(rate(http_request_duration_seconds_bucket{job=~"devops-app/backend|devops-app/worker",le="0.5"}[2m])) / sum(rate(http_request_duration_seconds_count{job=~"devops-app/backend|devops-app/worker"}[2m]))' "${PROMETHEUS_URL}/api/v1/query" | jq -r '.data.result[0].value[1] // "1"')
+
+                            echo "Availability ratio (last 2m): ${AVAIL_RATIO}"
+                            echo "Latency (<=500ms) ratio (last 2m): ${LATENCY_RATIO}"
+
+                            AVAIL_OK=$(awk -v v="${AVAIL_RATIO}" 'BEGIN { print (v+0 >= 0.99) ? 1 : 0 }')
+                            LATENCY_OK=$(awk -v v="${LATENCY_RATIO}" 'BEGIN { print (v+0 >= 0.95) ? 1 : 0 }')
+
+                            if [ "${AVAIL_OK}" != "1" ]; then
+                                echo "ERROR: post-deploy availability ratio ${AVAIL_RATIO} is below the 0.99 SLO threshold." >&2
+                                exit 1
+                            fi
+                            if [ "${LATENCY_OK}" != "1" ]; then
+                                echo "ERROR: post-deploy latency (<=500ms) ratio ${LATENCY_RATIO} is below the 0.95 SLO threshold." >&2
+                                exit 1
+                            fi
+                            echo "OK: post-deploy error rate and latency are within SLO thresholds."
+                        fi
+
+                        echo "Monitoring gate passed."
+                    '''
+                }
+            }
+        }
+    }
     post {
         always {
             container('kubectl') {
