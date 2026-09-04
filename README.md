@@ -47,6 +47,7 @@ AWS-DevOps-Jenkins-CICD/
 │   ├── deployment-view.mmd
 │   └── pipeline-flow.mmd
 ├── scripts/
+│   ├── bootstrap-ecr-secret.sh
 │   ├── install-jenkins.sh
 │   ├── configure-jenkins.sh
 │   ├── create-jobs.sh
@@ -76,17 +77,30 @@ chmod +x scripts/*.sh
 
 ./scripts/install-jenkins.sh     # base Helm install/upgrade (jenkins/helm/values.yaml)
 ./scripts/configure-jenkins.sh   # JCasC overlay + RBAC + NetworkPolicy + jenkins-ecr-credentials Secret
+```
+
+**One-time only, before the first ever CD deploy to a given cluster:** `application-cd`'s ServiceAccount is deliberately not permitted to `create` the `ecr-pull-secret` Secret (see RBAC below), so a human creates it once, out-of-band:
+
+```
+./scripts/bootstrap-ecr-secret.sh   # creates ecr-pull-secret in devops-app if it doesn't already exist — safe to re-run
+```
+
+`create-jobs.sh` talks to Jenkins over its REST API, so the UI must already be reachable before it runs:
+
+```
+kubectl port-forward svc/jenkins 8081:8080 -n jenkins   # keep this running in a separate terminal
+```
+
+Then, with the port-forward active:
+
+```
 ./scripts/create-jobs.sh         # creates/updates application-ci and application-cd jobs
 ./scripts/verify-jenkins.sh      # runs the evidence/verification commands below
 ```
 
-All four scripts are idempotent — safe to re-run at any time to reconcile the cluster back to this repo's state. Once complete, reach the UI with:
+All scripts are idempotent — safe to re-run at any time to reconcile the cluster back to this repo's state. Once complete, the UI stays reachable at `http://localhost:8081` for as long as the port-forward above is running.
 
-```
-kubectl port-forward svc/jenkins 8081:8080 -n jenkins
-```
-
-then open `http://localhost:8081`. `application-ci` polls its GitHub repo every 5 minutes (`H/5 * * * *`); pushing a commit (or clicking Build Now) triggers the full pipeline.
+`application-ci` polls its GitHub repo every 5 minutes (`H/5 * * * *`); pushing a commit (or clicking Build Now) triggers the full pipeline.
 
 To tear everything down: `./scripts/uninstall-jenkins.sh`. It only removes what this repo created in the `jenkins` namespace — the `devops-app` namespace, ECR repositories, and the `jenkins-ci-ecr` IAM user/policy are managed separately and untouched.
 
@@ -100,37 +114,38 @@ To tear everything down: `./scripts/uninstall-jenkins.sh`. It only removes what 
 4. **Tests** — `pytest` on both services, JUnit results recorded.
 5. **Build, Tag & Push (Kaniko)** — `kaniko-backend` and `kaniko-worker` build and push images to ECR tagged `<git-sha>-<build#>`, each in its own container so the two builds can't interfere with each other's build context. Image digests are captured.
 6. **Image Scan Results** — reads ECR's scan-on-push status for both images (best-effort, non-blocking — the scan itself runs asynchronously in ECR).
-7. **Publish Metadata** — archives `image-metadata.json` (commit, build number, tag, both digests) as a build artifact for traceability.
-8. Triggers `application-cd`, passing the image tag and digests as parameters. If any earlier stage fails, every remaining stage is skipped and `application-cd` is never triggered — verified live (see Evidence).
+7. **Publish Metadata** — archives `image-metadata.json` (commit SHA, build number, tag, both digests) as a build artifact for traceability.
+8. Triggers `application-cd`, passing the image tag, digests, and the exact commit SHA (`APP_COMMIT_SHA`) as parameters. If any earlier stage fails, every remaining stage is skipped and `application-cd` is never triggered — verified live (see Evidence).
 
 ### CD — `application-cd` (`pipelines/Jenkinsfile-cd`, runs on `cd-agent`)
 
-1. **Checkout** — clones `Jenkinsfile-cd` from this repo, then the Kubernetes manifests from `AWS-DevOps-Kubernetes`.
+1. **Checkout** — clones `Jenkinsfile-cd` from this repo, then the Kubernetes manifests from `AWS-DevOps-Kubernetes`, pinned to the exact commit SHA (`APP_COMMIT_SHA`) that CI built from — validated as a full 40-character SHA before checkout.
 2. **Input Validation** — confirms the passed image tag/digests are non-empty and the `devops-app` namespace exists.
-3. **Manifest Discovery & Validation** — `kubectl apply --dry-run=client` and `--dry-run=server` against every manifest in `k8s/` (excluding namespace and secret files, which are applied separately and never blindly re-applied).
+3. **Manifest Discovery & Validation** — renders the real backend/worker image digests directly into the deployment manifests, then runs `kubectl apply --dry-run=client` and `--dry-run=server` against every manifest in `k8s/` (excluding namespace and secret files, which are applied separately and never blindly re-applied) — so the dry-run actually validates the exact manifest content that gets applied, not a placeholder.
 4. **Authenticate / RBAC Sanity Check** — `kubectl auth can-i` checks confirm the `jenkins-cd-agent` ServiceAccount has exactly the permissions it needs (patch deployments, exec into pods) and fails fast if not.
-5. **Refresh ECR Pull Secret** — regenerates the `ecr-pull-secret` from a fresh ECR auth token and links it to `backend-sa`/`worker-sa`, so image pulls never rely on a long-lived pull secret.
-6. **Deploy** — applies manifests, then pins `backend` and `worker` to their exact image **digest** (never a mutable tag), annotates the deployment with the triggering build, and restarts the rollout.
+5. **Refresh ECR Pull Secret** — regenerates the value of the pre-existing `ecr-pull-secret` from a fresh ECR auth token, so image pulls never rely on a long-lived credential.
+6. **Deploy** — applies the manifests (already pinned to the exact image **digest**, never a mutable tag, from step 3), links `ecr-pull-secret` to `backend-sa`/`worker-sa` now that both ServiceAccounts are guaranteed to exist, annotates the deployment with the triggering build and manifest revision, and restarts the rollout.
 7. **Rollout** — waits on `kubectl rollout status` (180s timeout).
 8. **Verify** — re-reads the running deployment's image reference and confirms it matches the requested digest exactly.
 9. **Smoke Test** — execs into the live backend and worker pods and hits their `/api/health` / `/health` endpoints, expecting `200`.
+10. **Monitoring Gate** — waits for a fresh Prometheus scrape cycle, then confirms both the backend and worker scrape targets are `up` and that post-deploy availability/latency stay within the documented SLO thresholds before the pipeline is allowed to succeed.
 
-Deploying by digest rather than tag means what actually ran through CI is guaranteed to be what's running in `devops-app` — there's no window where a mutable tag could point somewhere else by the time CD applies it.
+Deploying by digest rather than tag, and by exact manifest commit SHA rather than a moving `main` branch tip, means what actually ran through CI is guaranteed to be what's running in `devops-app` — there's no window where a mutable tag or a manifest that changed after the build could point somewhere else by the time CD applies it.
 
 ## Rollback
 
-Every deploy is pinned to an immutable image digest (never a mutable tag), and every CI run archives `image-metadata.json` — containing the exact `IMAGE_TAG`, `backend_digest`, and `worker_digest` for that build — as a permanent build artifact. That means any previously-deployed version can be redeployed exactly, with no ambiguity about what "the previous version" means.
+Every deploy is pinned to an immutable image digest (never a mutable tag) and an exact manifest commit SHA, and every CI run archives `image-metadata.json` — containing the exact `IMAGE_TAG`, `backend_digest`, `worker_digest`, and `app_commit_sha` for that build — as a permanent build artifact. That means any previously-deployed version can be redeployed exactly, with no ambiguity about what "the previous version" means.
 
-**Standard rollback — re-run the CD pipeline against a known-good build.** Find the last good build's archived `image-metadata.json` (either in Jenkins under that build's artifacts, or by cross-referencing the `deployed-image-tag` / `deployed-by-build` annotations already present on the live Deployments — `kubectl get deployment backend -n devops-app -o jsonpath='{.metadata.annotations}'`), then trigger `application-cd` manually ("Build with Parameters") with that build's `IMAGE_TAG` and digests. This runs the full CD pipeline as normal — dry-run validation, RBAC check, deploy-by-digest, rollout wait, digest verification, and a smoke test — just pointed at the older, already-tested images. This is the preferred path: it goes through the same verification every forward deploy does, and leaves a normal, auditable Jenkins build record of the rollback.
+**Standard rollback — re-run the CD pipeline against a known-good build.** Find the last good build's archived `image-metadata.json` (either in Jenkins under that build's artifacts, or by cross-referencing the `deployed-image-tag` / `deployed-by-build` / `deployed-manifest-revision` annotations already present on the live Deployments — `kubectl get deployment backend -n devops-app -o jsonpath='{.metadata.annotations}'`), then trigger `application-cd` manually ("Build with Parameters") with that build's `IMAGE_TAG`, digests, and `APP_COMMIT_SHA`. This runs the full CD pipeline as normal — dry-run validation, RBAC check, deploy-by-digest, rollout wait, digest verification, and a smoke test — just pointed at the older, already-tested images and manifests. This is the preferred path: it goes through the same verification every forward deploy does, and leaves a normal, auditable Jenkins build record of the rollback.
 
-**Emergency rollback — `kubectl rollout undo`.** If Jenkins itself is unavailable, Kubernetes' own revision history can revert instantly: `kubectl rollout undo deployment/backend -n devops-app` and `kubectl rollout undo deployment/worker -n devops-app` roll each Deployment back to its previous ReplicaSet. This is faster but bypasses the pipeline's RBAC sanity check and smoke test, so it's a break-glass option only — once used, a proper `application-cd` run should follow to bring the deployment's state (and its `deployed-image-tag` annotation) back in sync with what Jenkins believes is live.
+**Emergency rollback — `kubectl rollout undo`.** If Jenkins itself is unavailable, Kubernetes' own revision history can revert instantly: `kubectl rollout undo deployment/backend -n devops-app` and `kubectl rollout undo deployment/worker -n devops-app` roll each Deployment back to its previous ReplicaSet. This is faster but bypasses the pipeline's RBAC sanity check and smoke test, so it's a break-glass option only — once used, a proper `application-cd` run should follow to bring the deployment's state (and its annotations) back in sync with what Jenkins believes is live.
 
 ## RBAC
 
 | ServiceAccount | Namespace scope | Bindings | Notes |
 |---|---|---|---|
 | `jenkins-ci-agent` | `jenkins` | **None** — no Role or ClusterRole bound anywhere | `automountServiceAccountToken: false`, so even if a compromised build step tried to call the Kubernetes API, it has no token to authenticate with. CI cannot deploy, read, or modify anything in the cluster. |
-| `jenkins-cd-agent` | `devops-app` (Role) + read-only cluster scope (ClusterRole) | `rbac/cd-deploy-rbac.yaml` | The Role grants exactly what the Deploy/Rollout/Verify/Smoke Test stages use — patch/get on Deployments, exec into pods, read Services/Pods — scoped to `devops-app` only. It deliberately excludes `create` on Secrets (secrets are refreshed via `apply`/`patch` on a pre-existing name, never created fresh, to avoid a broader `create` verb than necessary). The ClusterRole exists only to allow `kubectl get namespace devops-app` for the Input Validation stage, and is restricted via `resourceNames: ["devops-app"]` so it cannot list or read any other namespace. |
+| `jenkins-cd-agent` | `devops-app` (Role) + read-only cluster scope (ClusterRole) | `rbac/cd-deploy-rbac.yaml` | The Role grants exactly what the Deploy/Rollout/Verify/Smoke Test stages use — patch/get on Deployments, exec into pods, read Services/Pods — scoped to `devops-app` only. It deliberately excludes `create` on Secrets — Kubernetes RBAC cannot scope `create` by `resourceNames`, so allowing CD to create even one specific Secret would mean granting it the ability to create *any* Secret in the namespace. Instead, `ecr-pull-secret` is bootstrapped once, out-of-band, by `scripts/bootstrap-ecr-secret.sh`; CD only ever refreshes its value afterward via `apply`/`patch` on that pre-existing name. The ClusterRole exists only to allow `kubectl get namespace devops-app` for the Input Validation stage, and is restricted via `resourceNames: ["devops-app"]` so it cannot list or read any other namespace. |
 
 No ClusterRole with wildcard resources, no `cluster-admin` binding, anywhere in this project.
 

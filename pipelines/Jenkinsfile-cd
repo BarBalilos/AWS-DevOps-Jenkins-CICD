@@ -10,6 +10,7 @@ pipeline {
         string(name: 'IMAGE_DIGEST', defaultValue: '', description: 'backend=sha256:...,worker=sha256:... — digests produced by CI.')
         string(name: 'NAMESPACE', defaultValue: 'devops-app', description: 'Target Kubernetes namespace.')
         string(name: 'TRIGGERED_BY_BUILD', defaultValue: '', description: 'Identifier of the upstream CI build that triggered this deploy.')
+        string(name: 'APP_COMMIT_SHA', defaultValue: '', description: 'Exact commit SHA of AWS-DevOps-Kubernetes (manifests repo) to deploy, produced by CI.')
     }
     environment {
         ECR_REGISTRY = "938834037970.dkr.ecr.us-east-1.amazonaws.com"
@@ -22,12 +23,24 @@ pipeline {
         stage('Checkout') {
             steps {
                 container('kubectl') {
-                    sh 'apk add --no-cache git'
+                    sh '''
+                        set -eu
+                        apk add --no-cache git
+                        if [ -z "${APP_COMMIT_SHA}" ]; then
+                            echo "ERROR: APP_COMMIT_SHA is empty — CD must be triggered with an exact commit SHA from CI." >&2
+                            exit 1
+                        fi
+                        if ! echo "${APP_COMMIT_SHA}" | grep -Eq '^[0-9a-f]{40}$'; then
+                            echo "ERROR: APP_COMMIT_SHA '${APP_COMMIT_SHA}' is not a valid 40-character git SHA." >&2
+                            exit 1
+                        fi
+                    '''
                     dir('app-src') {
                         git branch: "${APP_REPO_BRANCH}", url: "${APP_REPO_URL}"
+                        sh 'git checkout "${APP_COMMIT_SHA}"'
                     }
                     sh 'git config --global --add safe.directory "*"'
-                    echo "Checked out app-src @ branch ${APP_REPO_BRANCH} (manifests only — no build happens here)."
+                    echo "Checked out app-src @ exact commit ${params.APP_COMMIT_SHA} (manifests only — no build happens here)."
                 }
             }
         }
@@ -71,6 +84,7 @@ pipeline {
                         echo "  WORKER_DIGEST:       ${WORKER_DIGEST}"
                         echo "  NAMESPACE:           ${NAMESPACE}"
                         echo "  TRIGGERED_BY_BUILD:  ${TRIGGERED_BY_BUILD}"
+                        echo "  APP_COMMIT_SHA:      ${APP_COMMIT_SHA}"
                     '''
                     script {
                         env.BACKEND_DIGEST = sh(script: 'cat backend-digest.txt', returnStdout: true).trim()
@@ -87,6 +101,14 @@ pipeline {
                         find app-src/k8s -maxdepth 1 -type f -name '*.yaml' ! -name '*namespace*' ! -name '*secret*' | sort > manifest-files.txt
                         echo "Manifests to apply (namespace/secret files excluded by design):"
                         cat manifest-files.txt
+
+                        BACKEND_DIGEST=$(cat backend-digest.txt)
+                        WORKER_DIGEST=$(cat worker-digest.txt)
+                        echo "-- Rendering real image digests into manifests before validation --"
+                        sed -i "s#image: devops-backend:v1#image: ${ECR_REGISTRY}/devops-app-backend@${BACKEND_DIGEST}#" app-src/k8s/05-backend-deployment.yaml
+                        sed -i "s#image: devops-worker:v1#image: ${ECR_REGISTRY}/devops-app-worker@${WORKER_DIGEST}#" app-src/k8s/07-worker-deployment.yaml
+                        grep -H 'image:' app-src/k8s/05-backend-deployment.yaml app-src/k8s/07-worker-deployment.yaml
+
                         echo "-- Dry-run (client) validation --"
                         while IFS= read -r f; do
                             echo "-- dry-run client: ${f} --"
@@ -129,9 +151,7 @@ pipeline {
                           -n "${NAMESPACE}" \
                           --dry-run=client -o yaml | kubectl apply -f -
                         set -x
-                        kubectl patch serviceaccount backend-sa -n "${NAMESPACE}" --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
-                        kubectl patch serviceaccount worker-sa -n "${NAMESPACE}" --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
-                        echo "ECR pull secret refreshed and linked to backend-sa/worker-sa."
+                        echo "ECR pull secret refreshed. (backend-sa/worker-sa linkage happens in the Deploy stage, after those ServiceAccounts are guaranteed to exist.)"
                     '''
                 }
             }
@@ -145,19 +165,21 @@ pipeline {
                             echo "-- apply: ${f} --"
                             kubectl apply -f "${f}"
                         done < manifest-files.txt
+
+                        echo "Linking ecr-pull-secret to backend-sa/worker-sa (ServiceAccounts now guaranteed to exist)..."
+                        kubectl patch serviceaccount backend-sa -n "${NAMESPACE}" --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
+                        kubectl patch serviceaccount worker-sa -n "${NAMESPACE}" --type=merge -p '{"imagePullSecrets":[{"name":"ecr-pull-secret"}]}'
+
                         BACKEND_DIGEST=$(cat backend-digest.txt)
                         WORKER_DIGEST=$(cat worker-digest.txt)
-                        echo "Pinning backend to digest ${BACKEND_DIGEST}..."
-                        kubectl set image deployment/backend backend="${ECR_REGISTRY}/devops-app-backend@${BACKEND_DIGEST}" -n "${NAMESPACE}"
-                        echo "Pinning worker to digest ${WORKER_DIGEST}..."
-                        kubectl set image deployment/worker worker="${ECR_REGISTRY}/devops-app-worker@${WORKER_DIGEST}" -n "${NAMESPACE}"
+                        echo "backend/worker manifests already pin digests ${BACKEND_DIGEST} / ${WORKER_DIGEST} (rendered during Manifest Discovery & Validation) — no separate 'kubectl set image' needed."
                         GIT_SHA_SHORT=$(echo "${IMAGE_TAG}" | cut -c1-12)
                         RELEASE_ID="application-cd-${BUILD_NUMBER}"
                         echo "Setting app_info env vars: APP_VERSION=${IMAGE_TAG} GIT_SHA=${GIT_SHA_SHORT} RELEASE=${RELEASE_ID}"
                         kubectl set env deployment/backend -n "${NAMESPACE}" APP_VERSION="${IMAGE_TAG}" GIT_SHA="${GIT_SHA_SHORT}" RELEASE="${RELEASE_ID}"
                         kubectl set env deployment/worker -n "${NAMESPACE}" APP_VERSION="${IMAGE_TAG}" GIT_SHA="${GIT_SHA_SHORT}" RELEASE="${RELEASE_ID}"
-                        kubectl annotate deployment/backend -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" --overwrite
-                        kubectl annotate deployment/worker -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" --overwrite
+                        kubectl annotate deployment/backend -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" deployed-manifest-revision="${APP_COMMIT_SHA}" --overwrite
+                        kubectl annotate deployment/worker -n "${NAMESPACE}" deployed-image-tag="${IMAGE_TAG}" deployed-by-build="${TRIGGERED_BY_BUILD}" deployed-manifest-revision="${APP_COMMIT_SHA}" --overwrite
                         kubectl rollout restart deployment/backend -n "${NAMESPACE}"
                         kubectl rollout restart deployment/worker -n "${NAMESPACE}"
                     '''
@@ -281,7 +303,7 @@ pipeline {
             cleanWs(deleteDirs: true, notFailBuild: true)
         }
         success {
-            echo "CD succeeded: backend@${env.BACKEND_DIGEST} and worker@${env.WORKER_DIGEST} deployed to ${params.NAMESPACE}, triggered by ${params.TRIGGERED_BY_BUILD}."
+            echo "CD succeeded: backend@${env.BACKEND_DIGEST} and worker@${env.WORKER_DIGEST} deployed to ${params.NAMESPACE} @ manifest revision ${params.APP_COMMIT_SHA}, triggered by ${params.TRIGGERED_BY_BUILD}."
         }
         failure {
             container('kubectl') {

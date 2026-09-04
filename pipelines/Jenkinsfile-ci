@@ -42,9 +42,10 @@ pipeline {
                     sh 'git config --global --add safe.directory "*"'
                     script {
                         env.GIT_COMMIT_SHORT = sh(script: 'cd app-src && git rev-parse --short=12 HEAD', returnStdout: true).trim()
+                        env.APP_COMMIT_SHA = sh(script: 'cd app-src && git rev-parse HEAD', returnStdout: true).trim()
                         env.IMAGE_TAG = "${env.GIT_COMMIT_SHORT}-${env.BUILD_NUMBER}"
                     }
-                    echo "app-src @ ${env.GIT_COMMIT_SHORT} (Jenkins build #${env.BUILD_NUMBER}) -> image tag ${env.IMAGE_TAG}"
+                    echo "app-src @ ${env.GIT_COMMIT_SHORT} (full SHA ${env.APP_COMMIT_SHA}, Jenkins build #${env.BUILD_NUMBER}) -> image tag ${env.IMAGE_TAG}"
                 }
             }
         }
@@ -166,6 +167,7 @@ pipeline {
                         cat > image-metadata.json <<JSON
 {
   "git_commit": "${GIT_COMMIT_SHORT}",
+  "app_commit_sha": "${APP_COMMIT_SHA}",
   "build_number": "${BUILD_NUMBER}",
   "image_tag": "${IMAGE_TAG}",
   "backend_image": "${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG}",
@@ -197,12 +199,13 @@ JSON
                           string(name: 'IMAGE_TAG', value: env.IMAGE_TAG),
                           string(name: 'IMAGE_DIGEST', value: digestParam),
                           string(name: 'NAMESPACE', value: 'devops-app'),
-                          string(name: 'TRIGGERED_BY_BUILD', value: "${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BUILD_URL})")
+                          string(name: 'TRIGGERED_BY_BUILD', value: "${env.JOB_NAME} #${env.BUILD_NUMBER} (${env.BUILD_URL})"),
+                          string(name: 'APP_COMMIT_SHA', value: env.APP_COMMIT_SHA)
                       ],
                       wait: false,
                       propagate: false
             }
-            echo "CI succeeded: ${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG} and ${ECR_REGISTRY}/devops-app-worker:${IMAGE_TAG} pushed. Triggered application-cd."
+            echo "CI succeeded: ${ECR_REGISTRY}/devops-app-backend:${IMAGE_TAG} and ${ECR_REGISTRY}/devops-app-worker:${IMAGE_TAG} pushed. Triggered application-cd @ commit ${env.APP_COMMIT_SHA}."
         }
         failure {
             echo "CI failed — no image was fully published; application-cd will NOT be triggered."
